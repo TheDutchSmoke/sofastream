@@ -14,6 +14,7 @@ _tv_start() {
     # Validate the channel before waking the TV or switching apps.
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     node "$TV_APP_DIR/playback.mjs" prepare || return 1
+    python3 "$TV_APP_DIR/settings.py" snapshot || return 1
 
     launchctl bootout "$domain/$label" 2>/dev/null
     rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
@@ -162,6 +163,11 @@ _tv_menu() {
                 fi
                 ;;
 
+            action:settings)
+                _tv_settings
+                TV_TUI_NOTICE='Instellingen gesloten. Je selectie geldt bij de volgende kanaalkeuze.'
+                ;;
+
             action:stop)
                 echo 'Tv-stream stoppen…'
                 TV_TUI_NOTICE=$(tv stop 2>&1) || :
@@ -199,6 +205,32 @@ _tv_menu() {
     done
 }
 
+_tv_settings() {
+    local rows choice notice=''
+    while true; do
+        rows=$(python3 "$TV_APP_DIR/settings.py" menu) || return 1
+        choice=$(print -r -- "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
+            --height=~85% --min-height=16 --layout=reverse --border=rounded --margin=1 --padding=1,2 \
+            --border-label=" SOFASTREAM${TV_DEV_MODE:+ @DEV} · INSTELLINGEN " \
+            --header-lines=2 --header-first --header="$notice" --prompt='Kies › ' \
+            --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,border:#7c3aed,prompt:#c4b5fd,pointer:#a78bfa' \
+            --pointer='▸' --no-sort --delimiter=$'\t' --with-nth=2.. --accept-nth=1 \
+            --bind='enter:accept-non-empty,ctrl-j:accept-non-empty,left-click:accept-non-empty,esc:abort') || return 0
+        case "$choice" in
+            device:*) notice=$(python3 "$TV_APP_DIR/settings.py" select "${choice#device:}" 2>&1) || : ;;
+            scan)
+                echo 'Apple TVs zoeken op het lokale netwerk…'
+                notice=$(python3 "$TV_APP_DIR/settings.py" scan 2>&1) || :
+                ;;
+            pair)
+                if tv pair; then notice='Apple TV gekoppeld.'; else notice='Koppelen niet afgerond.'; fi
+                ;;
+            auto|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
+            dev-info) notice=$(python3 "$TV_APP_DIR/settings.py" dev-info 2>&1) || : ;;
+        esac
+    done
+}
+
 tv() {
     local label="$TV_LAUNCH_LABEL"
     local domain="gui/$(id -u)"
@@ -212,6 +244,14 @@ tv() {
 
         configure)
             python3 "$TV_APP_DIR/settings.py" configure "$2" "$3"
+            ;;
+
+        settings|instellingen)
+            _tv_settings
+            ;;
+
+        dev)
+            python3 "$TV_APP_DIR/settings.py" dev-info
             ;;
 
         "")
@@ -230,6 +270,7 @@ Gebruik:
   tv stop               Stop huidige stream
   tv log                Volg Streamlink-log
   tv configure <host> [naam]  Stel Apple TV-adres in
+  tv settings           Instellingen en Apple TV-selector
   tv pair               Koppel automatisch wakker maken en VLC openen (pincode op tv)
 
   tv fav add <channel>  Voeg favoriet toe

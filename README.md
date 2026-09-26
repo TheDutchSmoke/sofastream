@@ -17,8 +17,14 @@ VLC op Apple TV en beide apparaten op hetzelfde lokale netwerk.
 Voor de eerste weergave:
 
 ```sh
-tv configure Woonkamer.local Woonkamer
+tv settings
 ```
+
+Kies **Zoek Apple TVs op het netwerk**, selecteer een apparaat en ga terug.
+Opgeslagen apparaten zijn zichtbaar zonder te scannen. Een wijziging geldt bij
+de volgende kanaalkeuze; status en stoppen blijven bij de actieve sessie horen.
+Een apparaat wordt ook bij een gewijzigd IP-adres herkend aan zijn apparaat-ID.
+Handmatig instellen kan met `tv configure <host> [naam]`.
 
 Open VLC en schakel **Afspelen op afstand / Remote Playback** in. Kies daarna een
 kanaal in `tv`. De Mac moet aanblijven tijdens het kijken.
@@ -55,6 +61,11 @@ Beide versies komen uit dezelfde tap. De devversie heeft eigen instellingen,
 favorieten, cache, Streamlink-poort (8766) en proceslabel. De normale `tv` gebruikt
 poort 8765. Met beide kun je dezelfde fysieke tv bedienen; start daar bewust maar
 één stream tegelijk. Een installatie of upgrade benadert nooit de Apple TV.
+
+Onder **Instellingen** heeft `tv-dev` een eigen **DEV**-sectie met versie-informatie
+en een actie om ontbrekende voorkeuren uit stabiel over te nemen. Bestaande
+devinstellingen worden behouden; koppelgegevens worden niet gekopieerd.
+`tv-dev dev` toont de versie, het instellingenpad en het updatecommando.
 
 ## Gegevens en privacy
 
