@@ -1,0 +1,16 @@
+node_modules/
+remote-venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+.env*
+apple-tv.json
+favorites
+priority-favorites
+remote/
+*.log
+*.err
+*.before-*
+before-*/

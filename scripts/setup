@@ -1,0 +1,6 @@
+#!/bin/zsh -f
+set -eu
+root="${0:A:h:h}"
+uv venv --python python3 "$root/remote-venv"
+uv pip install --python "$root/remote-venv/bin/python" -r "$root/app/remote-requirements.txt"
+npm ci --prefix "$root/app/gui-importer" --no-audit --no-fund

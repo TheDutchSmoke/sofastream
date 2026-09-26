@@ -1,0 +1,8 @@
+{
+  "name": "tv-gui-importer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "classic-level": "3.0.0"
+  }
+}

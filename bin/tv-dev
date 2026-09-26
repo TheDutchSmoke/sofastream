@@ -1,0 +1,9 @@
+#!/bin/zsh -f
+export TV_DEV_MODE=1
+export TV_CONFIG_DIR="${TV_CONFIG_DIR:-$HOME/.config/sofastream-dev}"
+export TV_CACHE_DIR="${TV_CACHE_DIR:-$HOME/.cache/sofastream-dev}"
+export TV_STREAM_PORT="${TV_STREAM_PORT:-8766}"
+export TV_LAUNCH_LABEL="${TV_LAUNCH_LABEL:-nl.tristan.streamlink-tv-dev}"
+export TV_STREAM_LOG="${TV_STREAM_LOG:-/tmp/streamlink-tv-dev.log}"
+export TV_STREAM_ERR="${TV_STREAM_ERR:-/tmp/streamlink-tv-dev.err}"
+exec "${0:A:h}/tv" "$@"
