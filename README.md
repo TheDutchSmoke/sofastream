@@ -17,8 +17,14 @@ VLC op Apple TV en beide apparaten op hetzelfde lokale netwerk.
 Voor de eerste weergave:
 
 ```sh
-tv configure Woonkamer.local Woonkamer
+tv settings
 ```
+
+Kies **Zoek Apple TVs op het netwerk**, selecteer een apparaat en ga terug.
+Opgeslagen apparaten zijn zichtbaar zonder te scannen. Een wijziging geldt bij
+de volgende kanaalkeuze; status en stoppen blijven bij de actieve sessie horen.
+Een apparaat wordt ook bij een gewijzigd IP-adres herkend aan zijn apparaat-ID.
+Handmatig instellen kan met `tv configure <host> [naam]`.
 
 Open VLC en schakel **Afspelen op afstand / Remote Playback** in. Kies daarna een
 kanaal in `tv`. De Mac moet aanblijven tijdens het kijken.
@@ -47,6 +53,7 @@ de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
 beoordeelde pull request in `main`. Een dev-installatie verandert main niet.
 
 ```sh
+brew trust --formula TheDutchSmoke/sofastream/sofastream-preview
 brew install TheDutchSmoke/sofastream/sofastream@dev
 tv-dev
 ```
@@ -55,6 +62,11 @@ Beide versies komen uit dezelfde tap. De devversie heeft eigen instellingen,
 favorieten, cache, Streamlink-poort (8766) en proceslabel. De normale `tv` gebruikt
 poort 8765. Met beide kun je dezelfde fysieke tv bedienen; start daar bewust maar
 één stream tegelijk. Een installatie of upgrade benadert nooit de Apple TV.
+
+Onder **Instellingen** heeft `tv-dev` een eigen **DEV**-sectie met versie-informatie
+en een actie om ontbrekende voorkeuren uit stabiel over te nemen. Bestaande
+devinstellingen worden behouden; koppelgegevens worden niet gekopieerd.
+`tv-dev dev` toont de versie, het instellingenpad en het updatecommando.
 
 ## Gegevens en privacy
 
@@ -79,6 +91,21 @@ git switch development
 `scripts/setup` installeert vastgezette Python- en Node-afhankelijkheden en maakt
 geen verbinding met Apple TV. Tests gebruiken tijdelijke bestanden en lokale
 VLC-fixtures. Hardwaretests worden apart en alleen op een beschikbare tv gedaan.
+
+Een nieuwe devversie publiceren: verhoog `VERSION` (bijvoorbeeld `0.2.0-dev.2`),
+commit en push naar `development`, wacht op groene CI en voer
+`./scripts/publish-release` uit. Dat maakt een prerelease en werkt uitsluitend
+`sofastream@dev` in dezelfde tap bij. Voor een stabiele release verloopt de
+wijziging eerst via een pull request naar `main`; gebruik daar een versie zonder
+`-dev` en hetzelfde script. Het script gebruikt je bestaande `gh`-login.
+
+Homebrew ondersteunt letters na `@` via een tap-alias. De naam voor installatie
+en updates is `sofastream@dev`; intern verwijst die naar de preview-formule.
+Homebrew vereist vertrouwen voor die interne formulenaam; alleen vertrouwen op
+de alias is niet voldoende. Dit is dezelfde tap, geen aparte dev-tap.
+Gebruik bij voorkeur fzf 0.74.4 of nieuwer: oudere versies hebben bekende fouten
+bij het lezen van muisinvoer. CI gebruikt de vastgezette 0.74.4-release en
+controleert de officiële SHA-256 van de download.
 
 De oorspronkelijke VLC-playback is op echte hardware bevestigd. Automatisch
 wekken, stoppen en nieuwe devfuncties moeten nog op hardware worden bevestigd;

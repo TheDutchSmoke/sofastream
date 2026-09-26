@@ -16,6 +16,7 @@ class Commands(unittest.TestCase):
         self.log = self.root/'stream.log'
         self.log.write_text('existing stream log')
         actual = Path(__file__).with_name('tui.py')
+        (self.root/'settings.py').write_text(Path(__file__).with_name('settings.py').read_text())
         wrapper = self.root/'tui.py'
         wrapper.write_text(f'''import importlib.util, sys
 sys.dont_write_bytecode = True
@@ -50,7 +51,7 @@ tv "$@"
 
     def run_tv(self, *args, unavailable=False):
         return subprocess.run(['zsh','-f',str(self.script),*args], text=True, capture_output=True,
-                              env={**os.environ, 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}, timeout=5)
+                              env={**os.environ, 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_APPLE_TV_CONFIG': str(self.root/'apple-tv.json'), 'TV_ACTIVE_TV_CONFIG': str(self.root/'active.json'), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}, timeout=5)
 
     def test_invalid_offline_and_unreachable_tv_preserve_existing_stream(self):
         for channel, unavailable in [('bad name', False), ('offline', False), ('star', True)]:
