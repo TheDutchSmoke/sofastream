@@ -154,7 +154,7 @@ tv.main()
         log = root / "stream.log"
         menu = menu.replace('/tmp/streamlink-tv.log', str(log))
         menu = menu.replace('/tmp/streamlink-tv.err', str(root / 'stream.err'))
-        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --watch {q}', 'printf "Test: lokale streamstatus"')
+        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --label', 'printf "Test: lokale streamstatus"')
         started = root / "started"
         script = root / "menu.zsh"
         profile = ""
