@@ -18,8 +18,21 @@ jobs:
           python-version: '3.14'
       - name: Dependencies
         run: |
-          brew install fzf streamlink
+          brew install streamlink
           npm ci --prefix app/gui-importer --no-audit --no-fund
+      - name: fzf 0.74.4 (mouse escape-sequence fixes)
+        run: |
+          case "$(uname -m)" in
+            arm64) arch=arm64; checksum=4f6a113bfc0c7959e0005c78d566a51afc4fcefc956f43735c62a9deb19e92ae ;;
+            x86_64) arch=amd64; checksum=2d392b50be66e2ab104ccd52a6072df692b1f9b9c5b449a9c098de885f32c4c5 ;;
+            *) exit 1 ;;
+          esac
+          archive="$RUNNER_TEMP/fzf.tar.gz"
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v0.74.4/fzf-0.74.4-darwin_$arch.tar.gz" -o "$archive"
+          printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/fzf-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/fzf-bin"
+          echo "$RUNNER_TEMP/fzf-bin" >> "$GITHUB_PATH"
       - name: Syntax
         run: |
           zsh -n app/tv.zsh bin/tv bin/tv-dev scripts/setup
