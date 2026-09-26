@@ -154,7 +154,7 @@ tv.main()
         log = root / "stream.log"
         menu = menu.replace('/tmp/streamlink-tv.log', str(log))
         menu = menu.replace('/tmp/streamlink-tv.err', str(root / 'stream.err'))
-        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --watch {q}', 'printf "Test: lokale streamstatus"')
+        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --label', 'printf "Test: lokale streamstatus"')
         started = root / "started"
         script = root / "menu.zsh"
         profile = ""
@@ -262,11 +262,11 @@ _tv_menu
             assert started.read_text().splitlines() == ["alpha"]
 
             click("star ", button=2)
-            pump(0.5)
+            visible("star: favoriet uit.")
             assert priority.read_text() == "", priority.read_text()
             assert started.read_text().splitlines() == ["alpha"]
             click("[Favoriet]")
-            pump(0.5)
+            visible("star: favoriet aan.")
             assert priority.read_text() == "star\n", priority.read_text() + '\n' + '\n'.join(screen.lines())
             click("[Verversen]")
             visible("Status bijgewerkt om")
@@ -298,7 +298,7 @@ _tv_menu
             os.write(master, b"star\r")
             visible("Test: star gestart voor Apple TV.")
             os.write(master, b"\x06")
-            pump(0.5)
+            visible("star: favoriet uit.")
             assert priority.read_text() == ""
             os.write(master, b"\x12")
             visible("Status bijgewerkt om")

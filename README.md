@@ -33,10 +33,10 @@ HDMI-CEC bepaalt of ook het fysieke televisiescherm automatisch aangaat.
 - Ctrl-R: Twitch-status verversen.
 - Esc: zoekopdracht wissen, teruggaan of sluiten.
 - Beheer: favorieten, GUI-import, status, stoppen, logs en koppelen.
-- De onderste statusregel volgt de Mac-stream automatisch, zonder de tv te bedienen.
+- De status in de bovenrand volgt de Mac-stream automatisch, zonder de tv te bedienen.
 - Video sluiten op de tv sluit de Mac-stream zodra VLC de HTTP-verbinding verbreekt.
 - De melding ‘Afspelen gestart’ is een bevestiging van die actie; ‘Status’ is een
-  gedateerde momentopname. De onderste regel geeft de actuele Mac-status.
+  gedateerde momentopname. De bovenrand geeft de actuele Mac-status.
 
 `tv --help` toont de commando's. `tv stop` stopt alleen de eigen stream. Sluiten van
 de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
