@@ -53,6 +53,7 @@ de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
 beoordeelde pull request in `main`. Een dev-installatie verandert main niet.
 
 ```sh
+brew trust --formula TheDutchSmoke/sofastream/sofastream-preview
 brew install TheDutchSmoke/sofastream/sofastream@dev
 tv-dev
 ```
@@ -100,6 +101,11 @@ wijziging eerst via een pull request naar `main`; gebruik daar een versie zonder
 
 Homebrew ondersteunt letters na `@` via een tap-alias. De naam voor installatie
 en updates is `sofastream@dev`; intern verwijst die naar de preview-formule.
+Homebrew vereist vertrouwen voor die interne formulenaam; alleen vertrouwen op
+de alias is niet voldoende. Dit is dezelfde tap, geen aparte dev-tap.
+Gebruik bij voorkeur fzf 0.74.4 of nieuwer: oudere versies hebben bekende fouten
+bij het lezen van muisinvoer. CI gebruikt de vastgezette 0.74.4-release en
+controleert de officiële SHA-256 van de download.
 
 De oorspronkelijke VLC-playback is op echte hardware bevestigd. Automatisch
 wekken, stoppen en nieuwe devfuncties moeten nog op hardware worden bevestigd;
