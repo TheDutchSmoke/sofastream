@@ -91,6 +91,16 @@ git switch development
 geen verbinding met Apple TV. Tests gebruiken tijdelijke bestanden en lokale
 VLC-fixtures. Hardwaretests worden apart en alleen op een beschikbare tv gedaan.
 
+Een nieuwe devversie publiceren: verhoog `VERSION` (bijvoorbeeld `0.2.0-dev.2`),
+commit en push naar `development`, wacht op groene CI en voer
+`./scripts/publish-release` uit. Dat maakt een prerelease en werkt uitsluitend
+`sofastream@dev` in dezelfde tap bij. Voor een stabiele release verloopt de
+wijziging eerst via een pull request naar `main`; gebruik daar een versie zonder
+`-dev` en hetzelfde script. Het script gebruikt je bestaande `gh`-login.
+
+Homebrew ondersteunt letters na `@` via een tap-alias. De naam voor installatie
+en updates is `sofastream@dev`; intern verwijst die naar de preview-formule.
+
 De oorspronkelijke VLC-playback is op echte hardware bevestigd. Automatisch
 wekken, stoppen en nieuwe devfuncties moeten nog op hardware worden bevestigd;
 tijdens de ontwikkeling was de tv in gebruik. CI bewijst geen hardwarewerking.

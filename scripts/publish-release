@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Publish a checked commit and update its formula in the existing Homebrew tap.
+
+Run on main for a stable version or development for a version containing -dev.
+Uses the user's gh login; never stores a token in the repository.
+"""
+import base64
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import urllib.request
+
+from render_formula import formula
+
+ROOT = Path(__file__).resolve().parent.parent
+APP = "TheDutchSmoke/sofastream"
+TAP = "TheDutchSmoke/homebrew-sofastream"
+
+
+def command(*args):
+    return subprocess.check_output(args, cwd=ROOT, text=True).strip()
+
+
+def api(path, payload=None):
+    args = ["gh", "api", path]
+    if payload is not None:
+        args += ["--method", "POST", "--input", "-"]
+    output = subprocess.check_output(args, cwd=ROOT, text=True,
+                                     input=json.dumps(payload) if payload is not None else None)
+    return json.loads(output)
+
+
+def main():
+    if command("git", "status", "--porcelain"):
+        raise ValueError("Commit alle wijzigingen vóór publiceren.")
+    version = (ROOT/"VERSION").read_text().strip()
+    channel = "dev" if "-dev" in version else "stable"
+    branch = "development" if channel == "dev" else "main"
+    if command("git", "branch", "--show-current") != branch:
+        raise ValueError(f"Publiceer deze versie vanaf {branch}.")
+    commit = command("git", "rev-parse", "HEAD")
+    remote = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
+    if remote != commit:
+        raise ValueError("Push eerst de commit naar GitHub.")
+    runs = api(f"repos/{APP}/actions/runs?head_sha={commit}")["workflow_runs"]
+    if not any(run["name"] == "CI" and run["conclusion"] == "success" for run in runs):
+        raise ValueError("Wacht op een geslaagde CI-run van deze commit.")
+    tag = "v" + version
+    releases = api(f"repos/{APP}/releases?per_page=100")
+    release = next((r for r in releases if r["tag_name"] == tag), None)
+    if release:
+        tag_commit = api(f"repos/{APP}/commits/{tag}")["sha"]
+        if tag_commit != commit:
+            raise ValueError("Deze versie bestaat voor een andere commit. Verhoog VERSION.")
+    else:
+        release = api(f"repos/{APP}/releases", {
+            "tag_name": tag, "target_commitish": commit, "name": f"SofaStream {version}",
+            "body": f"{'Development preview' if channel == 'dev' else 'Stable release'} from {branch}. CI uses isolated fixtures; see README for hardware validation limits.",
+            "prerelease": channel == "dev", "draft": False,
+        })
+    url = f"https://github.com/{APP}/archive/refs/tags/{tag}.tar.gz"
+    with urllib.request.urlopen(url, timeout=60) as response:
+        checksum = hashlib.sha256(response.read()).hexdigest()
+    filename = "sofastream-preview.rb" if channel == "dev" else "sofastream.rb"
+    path = f"repos/{TAP}/contents/Formula/{filename}"
+    existing = api(path)
+    payload = {
+        "message": f"Release {'sofastream@dev' if channel == 'dev' else 'sofastream'} {version}",
+        "sha": existing["sha"], "branch": "main",
+        "content": base64.b64encode(formula(channel, version, url, checksum).encode()).decode(),
+    }
+    subprocess.run(["gh", "api", "--method", "PUT", path, "--input", "-"],
+                   input=json.dumps(payload), text=True, stdout=subprocess.DEVNULL, check=True)
+    print(release["html_url"])
+    print("Homebrew-tap bijgewerkt.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        print(f"Publiceren gestopt: {error}", file=sys.stderr)
+        sys.exit(1)
