@@ -56,7 +56,7 @@ _tv_menu() {
     local -x TV_TUI_NOTICE=''
     local -a refresh_args
     local -a finder_style=(
-        --ansi --height=~85% --min-height=16 --layout=reverse
+        --ansi --height=85% --min-height=16 --layout=reverse
         --border=rounded --margin=1 --padding=1,2
         --pointer='▸' --prompt='Zoek › ' --info=inline-right
         --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,hl:#c4b5fd,hl+:#e9d5ff,border:#7c3aed,label:#c4b5fd,header:#94a3b8,prompt:#c4b5fd,pointer:#a78bfa,info:#64748b,spinner:#a78bfa'
@@ -209,7 +209,7 @@ _tv_settings() {
     while true; do
         rows=$(python3 "$TV_APP_DIR/settings.py" menu) || return 1
         choice=$(print -r -- "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-            --height=~85% --min-height=16 --layout=reverse --border=rounded --margin=1 --padding=1,2 \
+            --height=85% --min-height=16 --layout=reverse --border=rounded --margin=1 --padding=1,2 \
             --border-label=" SOFASTREAM${TV_DEV_MODE:+ @DEV} · INSTELLINGEN " \
             --header-lines=2 --header-first --header="$notice" --prompt='Kies › ' \
             --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,border:#7c3aed,prompt:#c4b5fd,pointer:#a78bfa' \
