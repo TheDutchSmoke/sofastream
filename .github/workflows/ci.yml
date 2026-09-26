@@ -33,3 +33,5 @@ jobs:
           node app/test_playback.mjs
           ./bin/tv --version
           ./bin/tv-dev --version
+          python3 app/test_interaction.py
+          python3 app/test_interaction.py --narrow
