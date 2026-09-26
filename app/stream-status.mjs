@@ -43,7 +43,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   process.stdout.on('error', () => process.exit(0));
   do {
     const stream = await getStreamStatus();
-    process.stdout.write(`\x1b[2J${describeStreamStatus(stream)}\n`);
+    if (process.argv[2] === '--label') {
+      const label = stream.state === 'running' ? `ACTIEF · ${stream.channel || 'stream'}`
+        : stream.state === 'stopped' ? 'GESTOPT' : 'STATUS ONBEKEND';
+      process.stdout.write(` SOFASTREAM${process.env.TV_DEV_MODE ? ' @DEV' : ''} · ${label} \n`);
+    } else {
+      process.stdout.write(`\x1b[2J${describeStreamStatus(stream)}\n`);
+    }
     if (process.argv[2] !== '--watch') break;
     await delay(2000);
   } while (true);

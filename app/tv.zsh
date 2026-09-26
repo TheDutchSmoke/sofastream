@@ -80,8 +80,7 @@ _tv_menu() {
             --border-label=" SOFASTREAM${TV_DEV_MODE:+ · DEV}  /  APPLE TV " \
             --list-label="$view_label" --list-border=top \
             --header-lines=4 --header-first \
-            --preview='node "$TV_APP_DIR/stream-status.mjs" --watch {q}' \
-            --preview-window='down,2,border-top,nowrap,noinfo' \
+            --bind='start,every(2):bg-transform-border-label:node "$TV_APP_DIR/stream-status.mjs" --label' \
             --footer="[Favoriet]  [Verversen]  [$close_label]"$'\nKlik/Enter openen · Rechtsklik/Ctrl-F ster · Esc wissen/terug' --footer-border=top \
             --no-sort --track --id-nth=1 \
             --delimiter=$'\t' \
@@ -89,7 +88,7 @@ _tv_menu() {
             --accept-nth=1 \
             --bind='enter:wait+accept-non-empty,ctrl-j:wait+accept-non-empty,left-click:accept-non-empty,right-click:trigger(ctrl-f),esc:cancel' \
             --bind='zero:change-header(Geen resultaten · Esc wist je zoekopdracht),change:change-header(),load:change-header()' \
-            --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_LINE:$FZF_CLICK_FOOTER_COLUMN" in 1:[1-9]|1:10) echo "trigger(ctrl-f)";; 1:1[3-9]|1:2[0-3]) echo "trigger(ctrl-r)";; 1:2[6-9]|1:3[0-4]) echo "abort";; esac' \
+            --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Favoriet]") echo "trigger(ctrl-f)";; "[Verversen]") echo "trigger(ctrl-r)";; "[Terug]"|"[Sluiten]") echo "abort";; esac' \
             --bind='ctrl-r:change-header(Twitch-status verversen…)+reload(python3 "$TV_APP_DIR/tui.py" --view "$TV_TUI_VIEW" --color --force)' \
             --bind='ctrl-f:reload(python3 "$TV_APP_DIR/tui.py" --toggle-key {1} --render-after-action --view "$TV_TUI_VIEW" --color)') || {
                 if [[ "$TV_TUI_VIEW" != live ]]; then
