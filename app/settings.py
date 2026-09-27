@@ -15,6 +15,30 @@ DEV = os.environ.get("TV_DEV_MODE") == "1"
 DEVICES = ROOT / "apple-tvs.json"
 
 
+def app_command():
+    return "sofastream@dev" if DEV else "tv"
+
+
+def remote_identity(config):
+    """Read only our local pairing markers; never discover or connect here."""
+    if not config.get("host"):
+        return None
+    private = ROOT / "remote"
+    paths = [private / "devices" / f"{device_key(config)}.json", private / "device.json"]
+    paths.extend(sorted((private / "devices").glob("*.json")))
+    identifiers = set(config.get("identifiers") or [])
+    for path in dict.fromkeys(paths):
+        try:
+            identity = json.loads(path.read_text())
+            matches = (identifiers.intersection(identity.get("identifiers") or [])
+                       if identifiers else identity.get("host") == config["host"])
+            if matches:
+                return identity
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
 def load():
     try:
         return json.loads(CONFIG.read_text())
@@ -22,7 +46,8 @@ def load():
         return {"port": 80, "streamPort": int(os.environ.get("TV_STREAM_PORT", 8765)), "autoStart": True}
 
 
-def save(config, destination=CONFIG):
+def save(config, destination=None):
+    destination = destination or CONFIG
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=destination.parent, prefix=".apple-tv-")
     try:
@@ -107,7 +132,9 @@ def menu():
         mark = "★" if key == selected else "○"
         print(f"device:{key}\t{mark} {clean(device['name'])} · {clean(device['host'])}")
     print("scan\t↻ Zoek Apple TVs op het netwerk")
-    print("pair\t⌘ Koppel automatisch starten (pincode op tv)")
+    paired = remote_identity(current) and (ROOT / "remote/pyatv.conf").is_file()
+    pairing = "koppeling opgeslagen · opnieuw koppelen" if paired else "eenmalig koppelen nodig"
+    print(f"pair\t⌘ Automatische start: {pairing} (pincode op tv)")
     enabled = current.get("autoStart", True)
     print(f"auto\tAutomatisch wakker maken en VLC openen: {'aan' if enabled else 'uit'}")
     if DEV:

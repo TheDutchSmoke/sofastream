@@ -20,6 +20,7 @@ jobs:
         run: |
           brew install streamlink
           npm ci --prefix app/gui-importer --no-audit --no-fund
+          python3 -m pip install -r app/remote-requirements.txt
       - name: fzf 0.74.4 (mouse escape-sequence fixes)
         run: |
           case "$(uname -m)" in
@@ -43,6 +44,7 @@ jobs:
           python3 app/test_tui.py
           python3 app/test_commands.py
           python3 app/test_settings.py
+          python3 app/test_remote.py
           node --test app/gui-importer/import.test.mjs
           node app/test_playback.mjs
           ./bin/tv --version

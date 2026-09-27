@@ -55,7 +55,9 @@ async function prepare() {
   try { await check(); return; } catch { /* VLC needs to be brought forward. */ }
   if (config.autoStart === false) throw new Error(unavailable);
   try {
-    await runFile(python, [helper, 'wake-vlc'], { timeout: 60000, maxBuffer: 8192 });
+    const result = await runFile(python, [helper, 'wake-vlc'], { timeout: 90000, maxBuffer: 8192 });
+    config.host = JSON.parse(result.stdout).host;
+    base = new URL(`http://${config.host}:${config.port}/`);
   } catch (error) {
     if (error.code === 'ENOENT') throw new Error('Automatische Apple TV-bediening ontbreekt. Installeer SofaStream opnieuw.');
     const message = String(error.stderr || '').trim().replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');

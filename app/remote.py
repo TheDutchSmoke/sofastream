@@ -18,15 +18,15 @@ import tempfile
 import termios
 
 import pyatv
-from pyatv.const import Protocol
+from pyatv.const import Protocol, FeatureName, FeatureState
 from pyatv.const import OperatingSystem
 from pyatv.storage.file_storage import FileStorage
-from settings import load as load_config, save as save_config, device_key
+from settings import load as load_config, save as save_config, device_key, remote_identity, app_command
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.environ.get("TV_CONFIG_DIR", Path.home() / ".config/tv"))
 PRIVATE = CONFIG_DIR / "remote"
-PAIR_HINT = "Automatische start nog niet gekoppeld. Voer later, als de tv vrij is, 'tv pair' uit."
+PAIR_HINT = f"Automatische start nog niet gekoppeld. Voer eenmalig '{app_command()} pair' uit (pincode op tv)."
 
 
 class RemoteError(Exception):
@@ -48,7 +48,7 @@ def save_private(path, data):
 
 class PrivateStorage(FileStorage):
     def _save_file(self, dumped):
-        save_private(PRIVATE / "pyatv.conf", dumped)
+        save_private(Path(self._filename), dumped)
 
 
 async def read_pin():
@@ -109,6 +109,15 @@ def pairing_file(config):
     return PRIVATE / "devices" / f"{device_key(config)}.json"
 
 
+def remember_device(config, device):
+    """Keep pairing and the selected address stable across DHCP/ID-list changes."""
+    config.update(host=str(device.address), identifiers=sorted(device.all_identifiers))
+    save_private(pairing_file(config), {
+        "identifiers": config["identifiers"], "name": device.name, "host": config["host"],
+    })
+    save_config(config)
+
+
 async def list_devices():
     devices = await pyatv.scan(asyncio.get_running_loop(), timeout=5)
     print(json.dumps([{
@@ -121,7 +130,7 @@ async def list_devices():
 
 async def pair(config, storage):
     if not sys.stdin.isatty():
-        raise RemoteError("Start 'tv pair' in je terminal om de pincode in te voeren.")
+        raise RemoteError(f"Start '{app_command()} pair' in je terminal om de pincode in te voeren.")
     print("Apple TV koppelen: er verschijnt zo een pincode op de tv. Ctrl-C annuleert.", flush=True)
     device = await discover(config, storage)
     handler = await pyatv.pair(device, Protocol.Companion, asyncio.get_running_loop(),
@@ -132,33 +141,23 @@ async def pair(config, storage):
         if not pin:
             raise RemoteError("Koppelen geannuleerd.")
         if not re.fullmatch(r"[0-9]{4}", pin):
-            raise RemoteError("Gebruik de vier cijfers op de tv. Start 'tv pair' opnieuw.")
+            raise RemoteError(f"Gebruik de vier cijfers op de tv. Start '{app_command()} pair' opnieuw.")
         handler.pin(int(pin))
         await asyncio.wait_for(handler.finish(), 15)
         if not handler.has_paired:
-            raise RemoteError("Koppelen niet bevestigd. Start 'tv pair' opnieuw.")
+            raise RemoteError(f"Koppelen niet bevestigd. Start '{app_command()} pair' opnieuw.")
         await storage.save()
-        save_private(pairing_file(config), {
-            "identifiers": sorted(device.all_identifiers),
-            "name": device.name,
-            "host": config["host"],
-        })
+        config["autoStart"] = True
+        remember_device(config, device)
         print("Gekoppeld. Een kanaal kiezen wekt voortaan zo nodig de Apple TV en opent VLC.")
     finally:
         await handler.close()
 
 
 async def wake_vlc(config, storage):
-    try:
-        identity = json.loads(pairing_file(config).read_text())
-    except FileNotFoundError:
-        # Compatibility with the original single-device local installation.
-        try:
-            identity = json.loads((PRIVATE / "device.json").read_text())
-        except FileNotFoundError:
-            identity = None
-        if not identity or identity.get("host") != config.get("host"):
-            raise RemoteError(PAIR_HINT) from None
+    identity = remote_identity(config)
+    if not identity:
+        raise RemoteError(PAIR_HINT)
     device = await discover(config, storage, identity)
     companion = device.get_service(Protocol.Companion)
     if not companion.credentials:
@@ -168,17 +167,34 @@ async def wake_vlc(config, storage):
     atv = await asyncio.wait_for(pyatv.connect(
         device, asyncio.get_running_loop(), storage=storage), 12)
     try:
+        for feature in (FeatureName.TurnOn, FeatureName.AppList, FeatureName.LaunchApp):
+            if atv.features.get_feature(feature).state != FeatureState.Available:
+                raise RemoteError("Deze Apple TV ondersteunt automatisch wekken en apps openen niet.")
         await asyncio.wait_for(atv.power.turn_on(), 8)
         await asyncio.sleep(1)
         # Resolve the installed app by its name instead of navigating Home Screen
         # tiles or hard-coding their positions. An explicit appId can override it.
-        apps = await asyncio.wait_for(atv.apps.app_list(), 8)
+        # Companion can answer before tvOS has finished waking. Retry read-only
+        # app discovery, never replay a launch or a playback command blindly.
+        apps = []
+        for attempt in range(3):
+            try:
+                apps = await asyncio.wait_for(atv.apps.app_list(), 4)
+                if apps:
+                    break
+            except (TimeoutError, pyatv.exceptions.ProtocolError):
+                if attempt == 2:
+                    raise RemoteError("Apple TV is nog niet klaar om VLC te openen. Probeer opnieuw.") from None
+            if attempt < 2:
+                await asyncio.sleep(1)
         wanted = config.get("appId")
         matches = [app for app in apps if (app.identifier == wanted if wanted
                                           else (app.name or "").casefold() == "vlc")]
         if len(matches) != 1:
             raise RemoteError("VLC niet eenduidig gevonden op de Apple TV. Controleer de installatie.")
         await asyncio.wait_for(atv.apps.launch_app(matches[0].identifier), 10)
+        remember_device(config, device)
+        return {"host": config["host"]}
     finally:
         tasks = atv.close()
         if tasks:
@@ -202,7 +218,7 @@ async def main(action):
     elif action == "pair":
         await pair(config, storage)
     else:
-        await wake_vlc(config, storage)
+        print(json.dumps(await wake_vlc(config, storage)))
 
 
 if __name__ == "__main__":
@@ -223,6 +239,6 @@ if __name__ == "__main__":
         print("Apple TV reageert te traag. Probeer later opnieuw.", file=sys.stderr)
         sys.exit(1)
     except Exception:
-        print("Apple TV-bediening mislukt. Controleer het netwerk; koppel zo nodig opnieuw met 'tv pair'.",
+        print(f"Apple TV-bediening mislukt. Controleer het netwerk; koppel zo nodig opnieuw met '{app_command()} pair'.",
               file=sys.stderr)
         sys.exit(1)

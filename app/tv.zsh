@@ -258,26 +258,28 @@ tv() {
             ;;
 
         --help|-h|help)
-            cat <<'EOF'
+            local command_name=tv
+            [[ "$TV_DEV_MODE" == 1 ]] && command_name=sofastream@dev
+            cat <<EOF
 📺 SofaStream — Twitch → Apple TV
 
 Gebruik:
-  tv                    Open interactieve TUI
-  tv <channel>          Start channel direct
+  $command_name                    Open interactieve TUI
+  $command_name <channel>          Start channel direct
 
-  tv status             Toon huidige status
-  tv stop               Stop huidige stream
-  tv log                Volg Streamlink-log
-  tv configure <host> [naam]  Stel Apple TV-adres in
-  tv settings           Instellingen en Apple TV-selector
-  tv pair               Koppel automatisch wakker maken en VLC openen (pincode op tv)
+  $command_name status             Toon huidige status
+  $command_name stop               Stop huidige stream
+  $command_name log                Volg Streamlink-log
+  $command_name configure <host> [naam]  Stel Apple TV-adres in
+  $command_name settings           Instellingen en Apple TV-selector
+  $command_name pair               Koppel automatisch wakker maken en VLC openen (pincode op tv)
 
-  tv fav add <channel>  Voeg favoriet toe
-  tv fav remove <name>  Verwijder kanaal en ster uit tv
-  tv fav list           Toon alle kanalen in tv
-  tv fav import         Importeer GUI-follows; behoud bestaande favorieten
+  $command_name fav add <channel>  Voeg favoriet toe
+  $command_name fav remove <name>  Verwijder kanaal en ster uit tv
+  $command_name fav list           Toon alle kanalen in tv
+  $command_name fav import         Importeer GUI-follows; behoud bestaande favorieten
 
-  tv --help             Toon deze help
+  $command_name --help             Toon deze help
 
 In het menu:
   Live kanalen: sterren eerst, daarna op kijkeraantal (hoog naar laag).
@@ -289,14 +291,14 @@ In het menu:
   In invoervelden annuleert Esc direct; in het lege hoofdmenu sluit Esc af.
 
 Voorbeelden:
-  tv
-  tv ohnepixel
-  tv fav add ohnepixel
-  tv stop
+  $command_name
+  $command_name ohnepixel
+  $command_name fav add ohnepixel
+  $command_name stop
 
 Playback:
-  Streamlink low-latency → HTTP :8765 → Apple TV
-  Na eenmalig 'tv pair': zo nodig Apple TV wekken en VLC openen bij kanaalkeuze.
+  Streamlink low-latency → HTTP :$TV_STREAM_PORT → Apple TV
+  Na eenmalig '$command_name pair': zo nodig Apple TV wekken en VLC openen bij kanaalkeuze.
 EOF
             ;;
 

@@ -32,6 +32,16 @@ Eenmalig `tv pair` koppelt de afstandsbediening voor automatisch wekken en VLC
 openen. Hierbij verschijnt een pincode op de Apple TV: doe dit wanneer die vrij is.
 HDMI-CEC bepaalt of ook het fysieke televisiescherm automatisch aangaat.
 
+Automatisch starten in de devversie stel je eenmalig in met
+`sofastream@dev pair` (of **Instellingen → Automatische start**). Voer de pincode
+op de Apple TV in wanneer die vrij is. Dit slaat de koppeling alleen in je
+devprofiel op en schakelt automatisch starten in. Instellingen toont of voor de
+geselecteerde Apple TV een koppeling is opgeslagen. Een kanaal kiezen controleert
+eerst de stream, wekt de gekoppelde Apple TV, opent VLC, wacht op de bediening en
+start daarna de stream. Staat VLC al klaar, dan is wekken niet nodig.
+VLC moet geïnstalleerd zijn en **Afspelen op afstand** moet eenmalig zijn aangezet.
+Een Apple TV zonder stroom of netwerk kan niet worden gewekt.
+
 ## Bediening
 
 - Klik of Enter: kanaal of overzicht openen.

@@ -45,6 +45,21 @@ class SettingsTests(unittest.TestCase):
         self.assertIn('scan\t', result.stdout)
         self.assertFalse((self.config/'apple-tv.json').exists())
 
+    def test_pairing_status_follows_device_identity_without_network_access(self):
+        self.run_setting('configure', 'alpha.local', 'Alpha')
+        self.assertIn('eenmalig koppelen nodig', self.run_setting('menu').stdout)
+        remote = self.config/'remote'
+        (remote/'devices').mkdir(parents=True)
+        (remote/'pyatv.conf').write_text('{}')
+        (remote/'devices/old-key.json').write_text(json.dumps({
+            'host': '192.0.2.1', 'identifiers': ['alpha'], 'name': 'Alpha'}))
+        config = {'host': '192.0.2.2', 'name': 'Alpha', 'identifiers': ['alpha', 'new-id']}
+        (self.config/'apple-tv.json').write_text(json.dumps(config))
+        self.assertIn('koppeling opgeslagen', self.run_setting('menu').stdout)
+        config['identifiers'] = ['beta']
+        (self.config/'apple-tv.json').write_text(json.dumps(config))
+        self.assertIn('eenmalig koppelen nodig', self.run_setting('menu').stdout)
+
     def test_bad_selection_never_changes_config(self):
         self.run_setting('configure','alpha.local','Alpha')
         before = (self.config/'apple-tv.json').read_bytes()
