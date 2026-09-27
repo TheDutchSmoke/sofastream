@@ -61,8 +61,9 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_missing_pairing_never_scans_or_connects(self):
+        self.config.pop("identifiers")
         with self.assertRaisesRegex(remote.RemoteError, "sofastream@dev pair"):
-            await remote.wake_vlc(self.config, self.storage)
+            await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=False))
         pyatv.scan.assert_not_called()
         pyatv.connect.assert_not_called()
         self.assertFalse((self.root / "apple-tv.json").exists())
@@ -75,7 +76,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         pyatv.connect.side_effect = None
         pyatv.connect.return_value = atv
         with patch.object(remote, "discover", AsyncMock(return_value=found)), patch.object(remote.asyncio, "sleep", AsyncMock()):
-            result = await remote.wake_vlc(self.config, self.storage)
+            result = await remote.prepare_vlc(self.config, self.storage, AsyncMock(side_effect=[False, True]))
         self.assertEqual(result, {"host": "192.0.2.20"})
         atv.power.turn_on.assert_awaited_once_with()
         self.assertEqual(atv.apps.app_list.await_count, 3)
@@ -98,10 +99,79 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
             pyatv.connect.return_value = atv
             with patch.object(remote, "discover", AsyncMock(return_value=device())), patch.object(remote.asyncio, "sleep", AsyncMock()):
                 with self.assertRaises(remote.RemoteError):
-                    await remote.wake_vlc(self.config, self.storage)
+                    await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=False))
             atv.apps.launch_app.assert_not_called()
             atv.close.assert_called_once()
-        self.assertFalse((self.root / "apple-tv.json").exists())
+        self.assertEqual(json.loads((self.root / "apple-tv.json").read_text())["streamPort"], 8766)
+
+    async def test_cached_endpoint_authenticates_without_any_discovery(self):
+        found = device()
+        await self.storage.update_settings(found)
+        remote.remember_device(self.config, found, "org.videolan.vlc")
+        atv = self.controller()
+        pyatv.connect.side_effect = None
+        pyatv.connect.return_value = atv
+        with patch.object(remote.asyncio, "sleep", AsyncMock()):
+            result = await remote.prepare_vlc(self.config, self.storage, AsyncMock(side_effect=[False, True]))
+        self.assertEqual(result["host"], "192.0.2.20")
+        pyatv.scan.assert_not_called()
+        pyatv.connect.assert_awaited_once()
+        atv.apps.app_list.assert_not_called()
+        atv.apps.launch_app.assert_awaited_once_with("org.videolan.vlc")
+
+    async def test_rejected_cached_connection_falls_back_to_verified_discovery(self):
+        found = device()
+        await self.storage.update_settings(found)
+        remote.remember_device(self.config, found)
+        atv = self.controller()
+        pyatv.connect.side_effect = [OSError("stale address"), atv]
+        with patch.object(remote, "discover", AsyncMock(return_value=found)) as discover:
+            await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=True))
+        discover.assert_awaited_once()
+        self.assertEqual(pyatv.connect.await_count, 2)
+        atv.power.turn_on.assert_not_called()
+        atv.apps.launch_app.assert_not_called()
+
+    async def test_slow_wake_retries_launch_in_same_request_without_remote_keys(self):
+        self.mark_paired()
+        atv = self.controller()
+        pyatv.connect.side_effect = None
+        pyatv.connect.return_value = atv
+        async def ready(config):
+            return atv.apps.launch_app.await_count == 2
+        with patch.object(remote, "discover", AsyncMock(return_value=device())), patch.object(remote.asyncio, "sleep", AsyncMock()):
+            await remote.prepare_vlc(self.config, self.storage, ready)
+        atv.power.turn_on.assert_awaited_once()
+        self.assertEqual(atv.apps.launch_app.await_count, 2)
+        pyatv.connect.assert_awaited_once()
+        atv.close.assert_called_once()
+
+    async def test_disabled_auto_start_and_ready_vlc_never_wake_or_launch(self):
+        self.mark_paired()
+        for ready, enabled in ((True, True), (False, False)):
+            atv = self.controller()
+            pyatv.connect.side_effect = None
+            pyatv.connect.return_value = atv
+            self.config["autoStart"] = enabled
+            with patch.object(remote, "discover", AsyncMock(return_value=device())):
+                if ready:
+                    await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=True))
+                else:
+                    with self.assertRaisesRegex(remote.RemoteError, "Afspelen op afstand"):
+                        await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=False))
+            atv.power.turn_on.assert_not_called()
+            atv.apps.launch_app.assert_not_called()
+            atv.close.assert_called_once()
+
+    async def test_profile_block_times_out_with_exact_setting_and_closes(self):
+        self.mark_paired()
+        atv = self.controller()
+        pyatv.connect.side_effect = None
+        pyatv.connect.return_value = atv
+        with patch.object(remote, "discover", AsyncMock(return_value=device())), patch.object(remote.asyncio, "sleep", AsyncMock()):
+            with self.assertRaisesRegex(remote.RemoteError, "Kies profiel bij uitschakelen sluimerstand"):
+                await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=False))
+        atv.close.assert_called_once()
 
     async def test_old_ip_cannot_wake_a_different_device(self):
         wrong, correct = device(identifier="other-room"), device()

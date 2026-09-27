@@ -7,6 +7,7 @@ https://pyatv.dev/development/storage/
 """
 import argparse
 import asyncio
+from ipaddress import ip_address
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ import tempfile
 import termios
 
 import pyatv
+import aiohttp
+from pyatv.conf import AppleTV, ManualService
 from pyatv.const import Protocol, FeatureName, FeatureState
 from pyatv.const import OperatingSystem
 from pyatv.storage.file_storage import FileStorage
@@ -109,11 +112,16 @@ def pairing_file(config):
     return PRIVATE / "devices" / f"{device_key(config)}.json"
 
 
-def remember_device(config, device):
+def remember_device(config, device, app_id=None):
     """Keep pairing and the selected address stable across DHCP/ID-list changes."""
-    config.update(host=str(device.address), identifiers=sorted(device.all_identifiers))
+    previous = remote_identity(config) or {}
+    config.update(host=str(device.address), identifiers=sorted(
+        set(config.get("identifiers") or []) | set(device.all_identifiers)))
+    companion = device.get_service(Protocol.Companion)
     save_private(pairing_file(config), {
         "identifiers": config["identifiers"], "name": device.name, "host": config["host"],
+        "companion": {"identifier": companion.identifier, "port": companion.port},
+        "vlcAppId": app_id or previous.get("vlcAppId"),
     })
     save_config(config)
 
@@ -154,10 +162,24 @@ async def pair(config, storage):
         await handler.close()
 
 
-async def wake_vlc(config, storage):
-    identity = remote_identity(config)
-    if not identity:
-        raise RemoteError(PAIR_HINT)
+async def connect_paired(config, storage, identity, session=None):
+    """Authenticate a remembered endpoint; discover only if it is stale/missing."""
+    cached = identity.get("companion")
+    if cached and cached.get("identifier") in identity.get("identifiers", []):
+        try:
+            device = AppleTV(ip_address(identity["host"]), identity["name"])
+            device.add_service(ManualService(cached["identifier"], Protocol.Companion,
+                                             int(cached["port"]), {}))
+            device.apply(await storage.get_settings(device))
+            if device.get_service(Protocol.Companion).credentials:
+                atv = await asyncio.wait_for(pyatv.connect(
+                    device, asyncio.get_running_loop(), storage=storage, session=session), 3)
+                return device, atv
+        except (OSError, TimeoutError, ValueError, KeyError,
+                pyatv.exceptions.AuthenticationError, pyatv.exceptions.ConnectionFailedError,
+                pyatv.exceptions.ConnectionLostError, pyatv.exceptions.ProtocolError):
+            # A changed IP/port must never be trusted without authenticating it.
+            pass
     device = await discover(config, storage, identity)
     companion = device.get_service(Protocol.Companion)
     if not companion.credentials:
@@ -165,36 +187,83 @@ async def wake_vlc(config, storage):
     for service in device.services:
         service.enabled = service.protocol == Protocol.Companion
     atv = await asyncio.wait_for(pyatv.connect(
-        device, asyncio.get_running_loop(), storage=storage), 12)
+        device, asyncio.get_running_loop(), storage=storage, session=session), 12)
+    return device, atv
+
+
+async def vlc_ready(session, config):
     try:
+        async with session.get(f"http://{config['host']}:{config.get('port', 80)}/web_resources.js",
+                               allow_redirects=False) as response:
+            return response.status == 200 and "PLAYER_CONTROL" in await response.text()
+    except (OSError, TimeoutError, aiohttp.ClientError, UnicodeError):
+        return False
+
+
+async def prepare_vlc(config, storage, ready, session=None):
+    """One connection for identify -> wake -> launch -> wait/retry until ready."""
+    identity = remote_identity(config)
+    if not identity:
+        if config.get("identifiers"):
+            device = await discover(config, storage)
+            config["host"] = str(device.address)
+        if await ready(config):
+            save_config(config)
+            return {"host": config["host"]}
+        if config.get("autoStart", True):
+            raise RemoteError(PAIR_HINT)
+        raise RemoteError("Open VLC op de gekozen Apple TV en zet Afspelen op afstand aan.")
+    device, atv = await connect_paired(config, storage, identity, session)
+    try:
+        remember_device(config, device)
+        if await ready(config):
+            return {"host": config["host"]}
+        if config.get("autoStart") is False:
+            raise RemoteError("Open VLC op de gekozen Apple TV en zet Afspelen op afstand aan.")
         for feature in (FeatureName.TurnOn, FeatureName.AppList, FeatureName.LaunchApp):
             if atv.features.get_feature(feature).state != FeatureState.Available:
                 raise RemoteError("Deze Apple TV ondersteunt automatisch wekken en apps openen niet.")
         await asyncio.wait_for(atv.power.turn_on(), 8)
-        await asyncio.sleep(1)
         # Resolve the installed app by its name instead of navigating Home Screen
         # tiles or hard-coding their positions. An explicit appId can override it.
-        # Companion can answer before tvOS has finished waking. Retry read-only
-        # app discovery, never replay a launch or a playback command blindly.
-        apps = []
-        for attempt in range(3):
-            try:
-                apps = await asyncio.wait_for(atv.apps.app_list(), 4)
-                if apps:
-                    break
-            except (TimeoutError, pyatv.exceptions.ProtocolError):
-                if attempt == 2:
-                    raise RemoteError("Apple TV is nog niet klaar om VLC te openen. Probeer opnieuw.") from None
-            if attempt < 2:
-                await asyncio.sleep(1)
-        wanted = config.get("appId")
-        matches = [app for app in apps if (app.identifier == wanted if wanted
-                                          else (app.name or "").casefold() == "vlc")]
-        if len(matches) != 1:
-            raise RemoteError("VLC niet eenduidig gevonden op de Apple TV. Controleer de installatie.")
-        await asyncio.wait_for(atv.apps.launch_app(matches[0].identifier), 10)
-        remember_device(config, device)
-        return {"host": config["host"]}
+        # Companion can answer before tvOS has finished waking. Retry app
+        # discovery if needed; cache the result per paired device.
+        app_id = config.get("appId") or identity.get("vlcAppId")
+        if not app_id:
+            apps = []
+            for attempt in range(3):
+                try:
+                    apps = await asyncio.wait_for(atv.apps.app_list(), 4)
+                    if apps:
+                        break
+                except (TimeoutError, pyatv.exceptions.ProtocolError):
+                    if attempt == 2:
+                        raise RemoteError("Apple TV is nog niet klaar om VLC te openen. Probeer opnieuw.") from None
+                if attempt < 2:
+                    await asyncio.sleep(0.25)
+            matches = [app for app in apps if (app.name or "").casefold() == "vlc"]
+            if len(matches) != 1:
+                raise RemoteError("VLC niet eenduidig gevonden op de Apple TV. Controleer de installatie.")
+            app_id = matches[0].identifier
+        remember_device(config, device, app_id)
+        # tvOS may acknowledge a launch while its wake/profile screen still
+        # covers it. Keep this single channel request alive and bring VLC forward
+        # again until its HTTP endpoint is ready. No select/menu key guesses.
+        deadline = asyncio.get_running_loop().time() + 30
+        for attempt in range(100):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            if attempt % 5 == 0:
+                try:
+                    await asyncio.wait_for(atv.apps.launch_app(app_id), 3)
+                except (TimeoutError, pyatv.exceptions.ProtocolError):
+                    pass
+            if await ready(config):
+                return {"host": config["host"]}
+            await asyncio.sleep(0.25)
+        raise RemoteError("VLC is nog niet klaar. Staat de profielkeuze in beeld? Zet op Apple TV onder "
+                          "Instellingen → Profielen en accounts 'Kies profiel bij uitschakelen sluimerstand' uit. "
+                          "Controleer ook Afspelen op afstand in VLC.")
     finally:
         tasks = atv.close()
         if tasks:
@@ -218,12 +287,15 @@ async def main(action):
     elif action == "pair":
         await pair(config, storage)
     else:
-        print(json.dumps(await wake_vlc(config, storage)))
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=1)) as session:
+            async def ready(current):
+                return await vlc_ready(session, current)
+            print(json.dumps(await prepare_vlc(config, storage, ready, session)))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Apple TV koppelen of wakker maken en VLC openen.")
-    parser.add_argument("action", choices=("pair", "wake-vlc", "scan", "resolve"))
+    parser.add_argument("action", choices=("pair", "prepare", "wake-vlc", "scan", "resolve"))
     args = parser.parse_args()
     # Protocol errors may contain private pairing material; show safe messages.
     logging.disable(logging.CRITICAL)

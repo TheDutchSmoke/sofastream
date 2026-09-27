@@ -42,6 +42,20 @@ start daarna de stream. Staat VLC al klaar, dan is wekken niet nodig.
 VLC moet geïnstalleerd zijn en **Afspelen op afstand** moet eenmalig zijn aangezet.
 Een Apple TV zonder stroom of netwerk kan niet worden gewekt.
 
+Verschijnt bij ontwaken **Wie kijkt er?**, zet dan op de Apple TV eenmalig
+**Instellingen → Profielen en accounts → Kies profiel bij uitschakelen
+sluimerstand** uit ([Apple-uitleg](https://support.apple.com/nl-nl/guide/tv/atvb13056b3d/tvos)).
+Zo kan de kanaalkeuze direct doorgaan naar VLC. SofaStream kiest geen willekeurig
+profiel en stuurt geen blinde OK-toets. Bij een trage ontwaking blijft dezelfde
+startopdracht maximaal 30 seconden proberen VLC te openen, totdat de bediening
+beschikbaar is. De stream wordt pas daarna gestart.
+
+Na de eerste succesvolle verbinding gebruikt SofaStream het opgeslagen
+Companion-adres en de VLC-appcode. Het controleert de koppeling bij iedere
+verbinding; bij een gewijzigd adres of poort wordt het apparaat opnieuw gezocht.
+Dit voorkomt de twee afzonderlijke zoekrondes van eerdere devversies. Je bestaande
+koppeling blijft geldig; opnieuw koppelen is hiervoor niet nodig.
+
 ## Bediening
 
 - Klik of Enter: kanaal of overzicht openen.

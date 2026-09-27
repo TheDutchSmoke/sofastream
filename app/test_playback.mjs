@@ -21,8 +21,12 @@ const preparations = [];
 const requests = [];
 const server = createServer((req, res) => {
   requests.push([req.url, req.headers.host]);
-  if (req.url === '/fixture-wake') {
-    preparations.push('wake-vlc');
+  if (req.url.startsWith('/fixture-prepare')) {
+    if (!available && req.url.includes('auto=false')) {
+      res.writeHead(503).end('Open VLC en zet Afspelen op afstand aan.');
+      return;
+    }
+    if (!available) preparations.push('prepare');
     available = true;
     res.end(JSON.stringify({ host: '127.0.0.1' }));
     return;
@@ -72,9 +76,14 @@ if (process.env.TV_FIXTURE_PAIR_MISSING) {
   console.error("Voer eenmalig 'sofastream@dev pair' uit (pincode op tv).");
   process.exit(1);
 }
-if (process.argv.at(-1) !== 'wake-vlc') process.exit(2);
-fetch('http://127.0.0.1:${server.address().port}/fixture-wake')
-  .then(response => response.text()).then(body => { console.log(body); process.exit(0); });
+if (process.argv.at(-1) !== 'prepare') process.exit(2);
+const config = JSON.parse(require('node:fs').readFileSync(process.env.TV_APPLE_TV_CONFIG, 'utf8'));
+fetch('http://127.0.0.1:${server.address().port}/fixture-prepare?auto=' + (config.autoStart !== false))
+  .then(async response => {
+    const body = await response.text();
+    if (!response.ok) { console.error(body); process.exit(1); }
+    console.log(body); process.exit(0);
+  });
 `, { mode: 0o700 });
 await writeFile(configPath, JSON.stringify(testConfig));
 await writeFile(logPath, '[cli][info] Starting server\n');
@@ -108,7 +117,7 @@ try {
     throw error;
   }
   console.log('PASS: wake and changed address');
-  assert.deepEqual(preparations, ['wake-vlc'], 'Wake once and poll the newly discovered address');
+  assert.deepEqual(preparations, ['prepare'], 'One helper owns discovery, wake and readiness');
   assert.equal(commands.length, 0, 'Prepare must not replace or queue playback');
   await writeFile(configPath, JSON.stringify(testConfig));
   current = 'http://example.invalid/old';
