@@ -56,6 +56,23 @@ verbinding; bij een gewijzigd adres of poort wordt het apparaat opnieuw gezocht.
 Dit voorkomt de twee afzonderlijke zoekrondes van eerdere devversies. Je bestaande
 koppeling blijft geldig; opnieuw koppelen is hiervoor niet nodig.
 
+## 2K (1440p)
+
+Twitch biedt 1440p alleen in H.265 aan, en meestal alleen aan ingelogde kijkers.
+Zet in **Instellingen → 2K** aan; dit vraagt een Apple TV 4K (H.265-decodering).
+SofaStream leest je Twitch-login uit de macOS-sleutelhanger (dienst
+`streamlink-twitch-auth`, account `twitch`); de login komt niet in instellingen,
+launchd of het Streamlink-log. Eenmalig opslaan: open twitch.tv ingelogd, kopieer in
+de browserconsole `copy(document.cookie.match(/auth-token=([^;]+)/)[1])` en voer uit:
+
+```sh
+security add-generic-password -U -a twitch -s streamlink-twitch-auth -w "$(pbpaste)" && pbcopy < /dev/null
+```
+
+Zonder (geldige) login speelt het kanaal gewoon af in maximaal 1080p; het
+Streamlink-log meldt dan waarom. Een andere dienstnaam kan met
+`TV_TWITCH_KEYCHAIN_SERVICE`.
+
 ## Bediening
 
 - Klik of Enter: kanaal of overzicht openen.

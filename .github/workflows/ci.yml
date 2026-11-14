@@ -36,7 +36,7 @@ jobs:
           echo "$RUNNER_TEMP/fzf-bin" >> "$GITHUB_PATH"
       - name: Syntax
         run: |
-          zsh -n app/tv.zsh bin/tv bin/tv-dev scripts/setup
+          zsh -n app/tv.zsh app/stream.zsh bin/tv bin/tv-dev scripts/setup
           node --check app/playback.mjs
           python3 -m compileall -q app -x 'node_modules'
       - name: Isolated fixtures (no Apple TV)
@@ -44,6 +44,7 @@ jobs:
           python3 app/test_tui.py
           python3 app/test_commands.py
           python3 app/test_settings.py
+          python3 app/test_stream.py
           python3 app/test_remote.py
           node --test app/gui-importer/import.test.mjs
           node app/test_playback.mjs

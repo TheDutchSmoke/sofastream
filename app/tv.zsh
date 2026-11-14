@@ -15,6 +15,8 @@ _tv_start() {
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     node "$TV_APP_DIR/playback.mjs" prepare || return 1
     python3 "$TV_APP_DIR/settings.py" snapshot || return 1
+    local hq
+    hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
 
     launchctl bootout "$domain/$label" 2>/dev/null
     rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
@@ -23,7 +25,7 @@ _tv_start() {
         -l "$label" \
         -o "$TV_STREAM_LOG" \
         -e "$TV_STREAM_ERR" \
-        -- "$streamlink" \
+        -- /bin/zsh -f "$TV_APP_DIR/stream.zsh" "$streamlink" "$hq" "$TV_TWITCH_KEYCHAIN_SERVICE" \
         --twitch-low-latency \
         --player-external-http \
         --player-external-http-continuous no \
@@ -224,7 +226,7 @@ _tv_settings() {
             pair)
                 if tv pair; then notice='Apple TV gekoppeld.'; else notice='Koppelen niet afgerond.'; fi
                 ;;
-            auto|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
+            auto|hq|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
             dev-info) notice=$(python3 "$TV_APP_DIR/settings.py" dev-info 2>&1) || : ;;
         esac
     done
