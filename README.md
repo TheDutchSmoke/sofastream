@@ -99,7 +99,9 @@ brew install TheDutchSmoke/sofastream/sofastream@dev
 tv-dev
 ```
 
-Beide versies komen uit dezelfde tap. De devversie heeft eigen instellingen,
+Homebrew ondersteunt `@dev` via een alias naar de interne preview-formule.
+Daarom vereist recent Homebrew vertrouwen voor die interne naam. Beide versies
+komen uit dezelfde tap; er is geen aparte dev-tap. De devversie heeft eigen instellingen,
 favorieten, cache, Streamlink-poort (8766) en proceslabel. De normale `tv` gebruikt
 poort 8765. Met beide kun je dezelfde fysieke tv bedienen; start daar bewust maar
 één stream tegelijk. Een installatie of upgrade benadert nooit de Apple TV.
