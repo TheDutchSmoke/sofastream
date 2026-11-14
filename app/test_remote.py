@@ -183,6 +183,29 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pyatv.scan.await_args_list[1].kwargs["identifier"], {"living-room"})
         pyatv.connect.assert_not_called()
 
+    async def test_configured_host_without_name_accepts_the_single_device_there(self):
+        pyatv.scan.side_effect = None
+        pyatv.scan.return_value = [device()]
+        config = {"host": "192.0.2.20", "name": "192.0.2.20", "port": 80}
+        with patch.object(remote.asyncio.get_running_loop(), "getaddrinfo",
+                          AsyncMock(return_value=[(None, None, None, None, ("192.0.2.20", 0))])):
+            found = await remote.discover(config, self.storage)
+        self.assertEqual(found.name, "Living Room")
+
+    async def test_name_match_is_case_insensitive_but_a_wrong_name_is_refused(self):
+        pyatv.scan.side_effect = None
+        pyatv.scan.return_value = [device()]
+        addr = AsyncMock(return_value=[(None, None, None, None, ("192.0.2.20", 0))])
+        with patch.object(remote.asyncio.get_running_loop(), "getaddrinfo", addr):
+            found = await remote.discover({"host": "tv.local", "name": "living room", "port": 80}, self.storage)
+            self.assertEqual(found.name, "Living Room")
+            with self.assertRaises(remote.RemoteError):
+                await remote.discover({"host": "tv.local", "name": "Slaapkamer", "port": 80}, self.storage)
+            two = [device(), device(identifier="other")]
+            pyatv.scan.return_value = two
+            with self.assertRaises(remote.RemoteError):
+                await remote.discover({"host": "192.0.2.20", "name": "192.0.2.20", "port": 80}, self.storage)
+
     async def test_storage_round_trip_keeps_credentials_private(self):
         found = device()
         await self.storage.update_settings(found)

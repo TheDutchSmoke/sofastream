@@ -99,7 +99,12 @@ async def discover(config, storage, identity=None):
             devices = await asyncio.wait_for(pyatv.scan(
                 loop, identifier=known, timeout=5, storage=storage), 8)
     else:
-        devices = [device for device in devices if device.name == config["name"]]
+        name = str(config.get("name") or "")
+        named = [device for device in devices if device.name.casefold() == name.casefold()]
+        # `configure <host>` without a name stores the host as name. Only then is a
+        # single device found by scanning exactly that host accepted as-is.
+        if named or name not in ("", config["host"]):
+            devices = named
     if len(devices) != 1:
         raise RemoteError("De ingestelde Apple TV is niet eenduidig gevonden; geen bedieningsopdracht verzonden.")
     device = devices[0]

@@ -1,7 +1,9 @@
 #!/bin/zsh -f
 # Starts Streamlink for one SofaStream session. launchd runs this script, so the
-# optional Twitch login is read here from the macOS Keychain and never ends up in
-# the launchd job definition, the settings files or the Streamlink log.
+# optional Twitch login is read here from the macOS Keychain. It never ends up in
+# the launchd job definition, process arguments, settings files or the stream log:
+# Streamlink reads it from a private (0600) temporary config file that is removed
+# right after startup.
 #
 # Usage: stream.zsh <streamlink> <2k:0|1> <keychain-service> <streamlink args...>
 streamlink="$1" hq="$2" service="$3"
@@ -20,7 +22,21 @@ if [[ "$hq" == 1 ]]; then
         # An expired login would make Streamlink fail; play without it (max 1080p) instead.
         print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; opnieuw ophalen voor 2K. Nu maximaal 1080p."
     else
-        extra+=(--twitch-api-header "Authorization=OAuth $token")
+        umask 077
+        tmpdir="${TV_PRIVATE_TMP:-$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)}"
+        # A stopped job can kill the remover below; sweep leftovers older than a minute.
+        /bin/rm -f -- "${tmpdir:-/tmp}"/sofastream-login.*(N.mm+0)
+        cfg=$(/usr/bin/mktemp "${tmpdir:-/tmp}/sofastream-login.XXXXXX") || exit 1
+        print -r -- "twitch-api-header=Authorization=OAuth $token" > "$cfg"
+        # --config skips Streamlink's default config files, so pass existing ones first.
+        for default in "$HOME/Library/Application Support/streamlink/config" \
+                       "$HOME/Library/Application Support/streamlink/config.twitch" \
+                       "$HOME/.config/streamlink/config" "$HOME/.config/streamlink/config.twitch"; do
+            [[ -f "$default" ]] && extra+=(--config "$default")
+        done
+        extra+=(--config "$cfg")
+        # Streamlink reads its config at startup; remove the file shortly after.
+        ( /bin/sleep "${TV_LOGIN_CONFIG_TTL:-15}"; /bin/rm -f -- "$cfg" ) &!
     fi
     unset token
 fi
