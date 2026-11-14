@@ -14,27 +14,56 @@ _tv_start() {
     # Validate the channel before waking the TV or switching apps.
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     node "$TV_APP_DIR/playback.mjs" prepare || return 1
+    python3 "$TV_APP_DIR/settings.py" snapshot || return 1
+    local hq address
+    hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
+    # Serve only on the Mac address that reaches the Apple TV, not on every network.
+    address=$(node "$TV_APP_DIR/playback.mjs" address) || return 1
+    [[ "$address" =~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' ]] || {
+        echo "❌ Lokaal netwerkadres richting Apple TV niet gevonden."
+        return 1
+    }
 
     launchctl bootout "$domain/$label" 2>/dev/null
     rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
 
-    if launchctl submit \
-        -l "$label" \
-        -o "$TV_STREAM_LOG" \
-        -e "$TV_STREAM_ERR" \
-        -- "$streamlink" \
+    # A one-shot job: unlike 'launchctl submit' (KeepAlive), launchd must not
+    # restart Streamlink after VLC closes the stream or Streamlink fails.
+    local cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
+    local job="$cache/$label.plist"
+    mkdir -p "$cache"
+    python3 -c 'import plistlib, sys
+job, label, out, err, *args = sys.argv[1:]
+with open(job, "wb") as handle:
+    plistlib.dump({"Label": label, "ProgramArguments": args, "RunAtLoad": True,
+                   "KeepAlive": False, "StandardOutPath": out, "StandardErrorPath": err}, handle)' \
+        "$job" "$label" "$TV_STREAM_LOG" "$TV_STREAM_ERR" \
+        /bin/zsh -f "$TV_APP_DIR/stream.zsh" "$streamlink" "$hq" "$TV_TWITCH_KEYCHAIN_SERVICE" \
         --twitch-low-latency \
         --player-external-http \
         --player-external-http-continuous no \
-        --player-external-http-interface 0.0.0.0 \
+        --player-external-http-interface "$address" \
         --player-external-http-port "$TV_STREAM_PORT" \
-        "https://www.twitch.tv/$channel" best
-    then
-        node "$TV_APP_DIR/playback.mjs" play "$channel"
-    else
+        "https://www.twitch.tv/$channel" best || {
+            echo "❌ Starten mislukt."
+            return 1
+        }
+
+    # bootout finishes asynchronously; retry briefly while the old job unloads.
+    local attempt started=0
+    for attempt in {1..20}; do
+        launchctl bootstrap "$domain" "$job" 2>/dev/null && { started=1; break; }
+        sleep 0.1
+    done
+    if (( ! started )); then
         echo "❌ Starten mislukt."
         return 1
     fi
+
+    node "$TV_APP_DIR/playback.mjs" play "$channel" && return 0
+    # Nobody connected: do not leave a server waiting on the network.
+    grep -qs 'Got HTTP request' "$TV_STREAM_LOG" || launchctl bootout "$domain/$label" 2>/dev/null
+    return 1
 }
 
 _tv_menu() {
@@ -161,6 +190,11 @@ _tv_menu() {
                 fi
                 ;;
 
+            action:settings)
+                _tv_settings
+                TV_TUI_NOTICE='Instellingen gesloten. Je selectie geldt bij de volgende kanaalkeuze.'
+                ;;
+
             action:stop)
                 echo 'Tv-stream stoppen…'
                 TV_TUI_NOTICE=$(tv stop 2>&1) || :
@@ -198,6 +232,32 @@ _tv_menu() {
     done
 }
 
+_tv_settings() {
+    local rows choice notice=''
+    while true; do
+        rows=$(python3 "$TV_APP_DIR/settings.py" menu) || return 1
+        choice=$(print -r -- "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
+            --height=85% --min-height=16 --layout=reverse --border=rounded --margin=1 --padding=1,2 \
+            --border-label=" SOFASTREAM${TV_DEV_MODE:+ @DEV} · INSTELLINGEN " \
+            --header-lines=2 --header-first --header="$notice" --prompt='Kies › ' \
+            --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,border:#7c3aed,prompt:#c4b5fd,pointer:#a78bfa' \
+            --pointer='▸' --no-sort --delimiter=$'\t' --with-nth=2.. --accept-nth=1 \
+            --bind='enter:accept-non-empty,ctrl-j:accept-non-empty,left-click:accept-non-empty,esc:abort') || return 0
+        case "$choice" in
+            device:*) notice=$(python3 "$TV_APP_DIR/settings.py" select "${choice#device:}" 2>&1) || : ;;
+            scan)
+                echo 'Apple TVs zoeken op het lokale netwerk…'
+                notice=$(python3 "$TV_APP_DIR/settings.py" scan 2>&1) || :
+                ;;
+            pair)
+                if tv pair; then notice='Apple TV gekoppeld.'; else notice='Koppelen niet afgerond.'; fi
+                ;;
+            auto|hq|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
+            dev-info) notice=$(python3 "$TV_APP_DIR/settings.py" dev-info 2>&1) || : ;;
+        esac
+    done
+}
+
 tv() {
     local label="$TV_LAUNCH_LABEL"
     local domain="gui/$(id -u)"
@@ -213,30 +273,41 @@ tv() {
             python3 "$TV_APP_DIR/settings.py" configure "$2" "$3"
             ;;
 
+        settings|instellingen)
+            _tv_settings
+            ;;
+
+        dev)
+            python3 "$TV_APP_DIR/settings.py" dev-info
+            ;;
+
         "")
             _tv_menu
             ;;
 
         --help|-h|help)
-            cat <<'EOF'
+            local command_name=tv
+            [[ "$TV_DEV_MODE" == 1 ]] && command_name=sofastream@dev
+            cat <<EOF
 📺 SofaStream — Twitch → Apple TV
 
 Gebruik:
-  tv                    Open interactieve TUI
-  tv <channel>          Start channel direct
+  $command_name                    Open interactieve TUI
+  $command_name <channel>          Start channel direct
 
-  tv status             Toon huidige status
-  tv stop               Stop huidige stream
-  tv log                Volg Streamlink-log
-  tv configure <host> [naam]  Stel Apple TV-adres in
-  tv pair               Koppel automatisch wakker maken en VLC openen (pincode op tv)
+  $command_name status             Toon huidige status
+  $command_name stop               Stop huidige stream
+  $command_name log                Volg Streamlink-log
+  $command_name configure <host> [naam]  Stel Apple TV-adres in
+  $command_name settings           Instellingen en Apple TV-selector
+  $command_name pair               Koppel automatisch wakker maken en VLC openen (pincode op tv)
 
-  tv fav add <channel>  Voeg favoriet toe
-  tv fav remove <name>  Verwijder kanaal en ster uit tv
-  tv fav list           Toon alle kanalen in tv
-  tv fav import         Importeer GUI-follows; behoud bestaande favorieten
+  $command_name fav add <channel>  Voeg favoriet toe
+  $command_name fav remove <name>  Verwijder kanaal en ster uit tv
+  $command_name fav list           Toon alle kanalen in tv
+  $command_name fav import         Importeer GUI-follows; behoud bestaande favorieten
 
-  tv --help             Toon deze help
+  $command_name --help             Toon deze help
 
 In het menu:
   Live kanalen: sterren eerst, daarna op kijkeraantal (hoog naar laag).
@@ -248,14 +319,14 @@ In het menu:
   In invoervelden annuleert Esc direct; in het lege hoofdmenu sluit Esc af.
 
 Voorbeelden:
-  tv
-  tv ohnepixel
-  tv fav add ohnepixel
-  tv stop
+  $command_name
+  $command_name ohnepixel
+  $command_name fav add ohnepixel
+  $command_name stop
 
 Playback:
-  Streamlink low-latency → HTTP :8765 → Apple TV
-  Na eenmalig 'tv pair': zo nodig Apple TV wekken en VLC openen bij kanaalkeuze.
+  Streamlink low-latency → HTTP :$TV_STREAM_PORT → Apple TV
+  Na eenmalig '$command_name pair': zo nodig Apple TV wekken en VLC openen bij kanaalkeuze.
 EOF
             ;;
 

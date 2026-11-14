@@ -31,6 +31,7 @@ ACTIONS = (
     ("action:stop", "■", "Apple TV-stream stoppen"),
     ("action:log", "≡", "Streamlog bekijken"),
     ("action:pair", "⌘", "Automatisch starten koppelen (pincode op tv)"),
+    ("action:settings", "⚙", "Instellingen · Apple TV kiezen"),
 )
 COLORS = {"purple": 141, "green": 84, "gold": 220, "muted": 245,
           "white": 255, "cyan": 117}

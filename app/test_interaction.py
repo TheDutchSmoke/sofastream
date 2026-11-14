@@ -209,6 +209,14 @@ _tv_menu
                     break
             raise AssertionError(f"Missing visible result: {text}\n" + "\n".join(screen.lines()))
 
+        def settled(condition, timeout=3):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if condition():
+                    return True
+                pump(0.1)
+            return condition()
+
         def click(text, button=0):
             x, y = screen.locate(text)
             os.write(master, f"\x1b[<{button};{x};{y}M".encode())
@@ -266,6 +274,11 @@ _tv_menu
             assert priority.read_text() == "", priority.read_text()
             assert started.read_text().splitlines() == ["alpha"]
             click("[Favoriet]")
+            # Under load fzf occasionally drops a single mouse click entirely (no
+            # click-footer event). Click again only when the favorites file proves
+            # that no toggle ran, so this can never toggle twice.
+            if not settled(lambda: priority.read_text() == "star\n", 5):
+                click("[Favoriet]")
             visible("star: favoriet aan.")
             assert priority.read_text() == "star\n", priority.read_text() + '\n' + '\n'.join(screen.lines())
             click("[Verversen]")

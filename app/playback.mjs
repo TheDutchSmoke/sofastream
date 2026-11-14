@@ -12,13 +12,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getStreamStatus, describeStreamStatus } from './stream-status.mjs';
 
-const configPath = process.env.TV_APPLE_TV_CONFIG || join(process.env.TV_CONFIG_DIR || join(homedir(), '.config/tv'), 'apple-tv.json');
-const config = JSON.parse(await readFile(configPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; }));
+const selectedPath = process.env.TV_APPLE_TV_CONFIG || join(process.env.TV_CONFIG_DIR || join(homedir(), '.config/tv'), 'apple-tv.json');
+const activePath = ['address', 'play', 'stop', 'status'].includes(process.argv[2]) && process.env.TV_ACTIVE_TV_CONFIG;
+const selectedConfig = () => readFile(selectedPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; });
+const config = JSON.parse(activePath ? await readFile(activePath, 'utf8').catch(selectedConfig) : await selectedConfig());
 config.streamPort = Number(process.env.TV_STREAM_PORT || config.streamPort || 8765);
 config.port ||= 80;
 config.name ||= 'Apple TV';
-const base = config.host ? new URL(`http://${config.host}:${config.port}/`) : null;
-const unavailable = base ? `Open VLC op ${config.name} en zet Afspelen op afstand aan.` : 'Geen Apple TV gekozen. Gebruik tv configure <host> [naam].';
+let base = config.host ? new URL(`http://${config.host}:${config.port}/`) : null;
+const unavailable = base ? `Open VLC op ${config.name} en zet Afspelen op afstand aan.` : 'Kies eerst een Apple TV via Instellingen → Apple TV kiezen.';
 const runFile = promisify(execFile);
 
 async function request(path) {
@@ -39,22 +41,17 @@ async function check() {
 
 async function prepare() {
   // Only playback calls prepare. Status, stop and menu rendering stay passive.
-  try { await check(); return; } catch { /* VLC needs to be brought forward. */ }
-  if (config.autoStart === false) throw new Error(unavailable);
   const python = process.env.TV_REMOTE_PYTHON || fileURLToPath(new URL('../remote-venv/bin/python', import.meta.url));
   const helper = fileURLToPath(new URL('./remote.py', import.meta.url));
   try {
-    await runFile(python, [helper, 'wake-vlc'], { timeout: 60000, maxBuffer: 8192 });
+    const result = await runFile(python, [helper, 'prepare'], { timeout: 90000, maxBuffer: 8192 });
+    config.host = JSON.parse(result.stdout).host;
+    base = new URL(`http://${config.host}:${config.port}/`);
   } catch (error) {
     if (error.code === 'ENOENT') throw new Error('Automatische Apple TV-bediening ontbreekt. Installeer SofaStream opnieuw.');
     const message = String(error.stderr || '').trim().replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
     throw new Error(message || 'Apple TV wakker maken of VLC openen niet bevestigd. Probeer later opnieuw.');
   }
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try { await check(); return; } catch { await delay(500); }
-  }
-  throw new Error(`VLC-bediening op ${config.name} nog niet bereikbaar. Zet in VLC Afspelen op afstand aan.`);
 }
 
 async function localAddress() {
@@ -207,10 +204,11 @@ try {
   switch (process.argv[2]) {
     case 'check': await check(); break;
     case 'prepare': await prepare(); break;
+    case 'address': console.log(await localAddress()); break;
     case 'play': await openStream(process.argv[3] || 'Kanaal'); break;
     case 'status': await status(); break;
     case 'stop': await stop(); break;
-    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|play|status|stop`);
+    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|address|play|status|stop`);
   }
 } catch (error) {
   console.error(error.message);
