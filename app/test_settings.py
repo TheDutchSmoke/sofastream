@@ -93,6 +93,30 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(config['autoStart'])
         self.assertEqual(config['host'], 'alpha.local')
 
+    def fake_security(self, found):
+        fake = self.root/'security'
+        fake.write_text(f'#!/bin/sh\nexit {0 if found else 44}\n')
+        fake.chmod(0o755)
+        self.env['TV_SECURITY_BIN'] = str(fake)
+
+    def test_2k_toggle_is_off_by_default_and_keeps_other_settings(self):
+        self.fake_security(found=False)
+        self.run_setting('configure', 'alpha.local', 'Alpha')
+        self.assertEqual(self.run_setting('hq-enabled').stdout.strip(), '0')
+        self.assertIn('2K (1440p, H.265; Apple TV 4K): uit · geen Twitch-login', self.run_setting('menu').stdout)
+        result = self.run_setting('hq')
+        self.assertIn('Zonder Twitch-login', result.stdout)
+        self.assertEqual(self.run_setting('hq-enabled').stdout.strip(), '1')
+        config = json.loads((self.config/'apple-tv.json').read_text())
+        self.assertTrue(config['twitch2k'])
+        self.assertEqual(config['host'], 'alpha.local')
+        self.assertTrue(config['autoStart'])
+
+    def test_2k_menu_reports_login_without_reading_it(self):
+        self.fake_security(found=True)
+        self.run_setting('hq')
+        self.assertIn(': aan · Twitch-login gevonden', self.run_setting('menu').stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

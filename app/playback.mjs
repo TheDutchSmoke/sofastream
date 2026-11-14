@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { getStreamStatus, describeStreamStatus } from './stream-status.mjs';
 
 const selectedPath = process.env.TV_APPLE_TV_CONFIG || join(process.env.TV_CONFIG_DIR || join(homedir(), '.config/tv'), 'apple-tv.json');
-const activePath = ['play', 'stop', 'status'].includes(process.argv[2]) && process.env.TV_ACTIVE_TV_CONFIG;
+const activePath = ['address', 'play', 'stop', 'status'].includes(process.argv[2]) && process.env.TV_ACTIVE_TV_CONFIG;
 const selectedConfig = () => readFile(selectedPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; });
 const config = JSON.parse(activePath ? await readFile(activePath, 'utf8').catch(selectedConfig) : await selectedConfig());
 config.streamPort = Number(process.env.TV_STREAM_PORT || config.streamPort || 8765);
@@ -204,10 +204,11 @@ try {
   switch (process.argv[2]) {
     case 'check': await check(); break;
     case 'prepare': await prepare(); break;
+    case 'address': console.log(await localAddress()); break;
     case 'play': await openStream(process.argv[3] || 'Kanaal'); break;
     case 'status': await status(); break;
     case 'stop': await stop(); break;
-    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|play|status|stop`);
+    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|address|play|status|stop`);
   }
 } catch (error) {
   console.error(error.message);

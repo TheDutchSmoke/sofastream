@@ -15,27 +15,55 @@ _tv_start() {
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     node "$TV_APP_DIR/playback.mjs" prepare || return 1
     python3 "$TV_APP_DIR/settings.py" snapshot || return 1
+    local hq address
+    hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
+    # Serve only on the Mac address that reaches the Apple TV, not on every network.
+    address=$(node "$TV_APP_DIR/playback.mjs" address) || return 1
+    [[ "$address" =~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' ]] || {
+        echo "❌ Lokaal netwerkadres richting Apple TV niet gevonden."
+        return 1
+    }
 
     launchctl bootout "$domain/$label" 2>/dev/null
     rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
 
-    if launchctl submit \
-        -l "$label" \
-        -o "$TV_STREAM_LOG" \
-        -e "$TV_STREAM_ERR" \
-        -- "$streamlink" \
+    # A one-shot job: unlike 'launchctl submit' (KeepAlive), launchd must not
+    # restart Streamlink after VLC closes the stream or Streamlink fails.
+    local cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
+    local job="$cache/$label.plist"
+    mkdir -p "$cache"
+    python3 -c 'import plistlib, sys
+job, label, out, err, *args = sys.argv[1:]
+with open(job, "wb") as handle:
+    plistlib.dump({"Label": label, "ProgramArguments": args, "RunAtLoad": True,
+                   "KeepAlive": False, "StandardOutPath": out, "StandardErrorPath": err}, handle)' \
+        "$job" "$label" "$TV_STREAM_LOG" "$TV_STREAM_ERR" \
+        /bin/zsh -f "$TV_APP_DIR/stream.zsh" "$streamlink" "$hq" "$TV_TWITCH_KEYCHAIN_SERVICE" \
         --twitch-low-latency \
         --player-external-http \
         --player-external-http-continuous no \
-        --player-external-http-interface 0.0.0.0 \
+        --player-external-http-interface "$address" \
         --player-external-http-port "$TV_STREAM_PORT" \
-        "https://www.twitch.tv/$channel" best
-    then
-        node "$TV_APP_DIR/playback.mjs" play "$channel"
-    else
+        "https://www.twitch.tv/$channel" best || {
+            echo "❌ Starten mislukt."
+            return 1
+        }
+
+    # bootout finishes asynchronously; retry briefly while the old job unloads.
+    local attempt started=0
+    for attempt in {1..20}; do
+        launchctl bootstrap "$domain" "$job" 2>/dev/null && { started=1; break; }
+        sleep 0.1
+    done
+    if (( ! started )); then
         echo "❌ Starten mislukt."
         return 1
     fi
+
+    node "$TV_APP_DIR/playback.mjs" play "$channel" && return 0
+    # Nobody connected: do not leave a server waiting on the network.
+    grep -qs 'Got HTTP request' "$TV_STREAM_LOG" || launchctl bootout "$domain/$label" 2>/dev/null
+    return 1
 }
 
 _tv_menu() {
@@ -224,7 +252,7 @@ _tv_settings() {
             pair)
                 if tv pair; then notice='Apple TV gekoppeld.'; else notice='Koppelen niet afgerond.'; fi
                 ;;
-            auto|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
+            auto|hq|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
             dev-info) notice=$(python3 "$TV_APP_DIR/settings.py" dev-info 2>&1) || : ;;
         esac
     done
