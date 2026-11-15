@@ -214,7 +214,7 @@ async def prepare_vlc(config, storage, ready, session=None):
             config["host"] = str(device.address)
         if await ready(config):
             save_config(config)
-            return {"host": config["host"]}
+            return {"host": config["host"], "woke": False}
         if config.get("autoStart", True):
             raise RemoteError(PAIR_HINT)
         raise RemoteError("Open VLC op de gekozen Apple TV en zet Afspelen op afstand aan.")
@@ -222,7 +222,7 @@ async def prepare_vlc(config, storage, ready, session=None):
     try:
         remember_device(config, device)
         if await ready(config):
-            return {"host": config["host"]}
+            return {"host": config["host"], "woke": False}
         if config.get("autoStart") is False:
             raise RemoteError("Open VLC op de gekozen Apple TV en zet Afspelen op afstand aan.")
         for feature in (FeatureName.TurnOn, FeatureName.AppList, FeatureName.LaunchApp):
@@ -264,7 +264,8 @@ async def prepare_vlc(config, storage, ready, session=None):
                 except (TimeoutError, pyatv.exceptions.ProtocolError):
                     pass
             if await ready(config):
-                return {"host": config["host"]}
+                # Woken now: tvOS may still show a profile choice that closes VLC.
+                return {"host": config["host"], "woke": True}
             await asyncio.sleep(0.25)
         raise RemoteError("VLC is nog niet klaar. Staat de profielkeuze in beeld? Zet op Apple TV onder "
                           "Instellingen → Profielen en accounts 'Kies profiel bij uitschakelen sluimerstand' uit. "

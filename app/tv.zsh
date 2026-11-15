@@ -1,5 +1,39 @@
+# A wake can show tvOS' profile choice; choosing a profile closes VLC. Within a
+# short window after a wake-start, reopen VLC and restart the stream once.
+# Cancelling only removes the marker (no kill, so no risk of hitting a reused PID).
+_tv_cancel_profile_retry() {
+    rm -f "${TV_CACHE_DIR:-$HOME/.cache/tv}/profile-retry"
+}
+
+_tv_profile_retry() {
+    local channel="$1" cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
+    local marker="$cache/profile-retry" log="$cache/profile-retry.log"
+    local token="$$.$RANDOM.$SECONDS"
+    print -r -- "$token" > "$marker"
+    : > "$log"
+    # Fully detached: the TUI captures _tv_start's output and must not wait on this.
+    (
+        local end=$(( SECONDS + ${TV_PROFILE_RETRY_WINDOW:-30} ))
+        while (( SECONDS < end )); do
+            [[ "$(<"$marker")" == "$token" ]] || exit 0
+            if grep -qs 'HTTP connection closed' "$TV_STREAM_LOG"; then
+                [[ "$(<"$marker")" == "$token" ]] || exit 0
+                rm -f "$marker"
+                print -r -- "$(date +%T) VLC sloot kort na wekken (profielkeuze?); eenmalig opnieuw starten." >> "$log"
+                _tv_start "$channel" noretry >> "$log" 2>&1
+                exit 0
+            fi
+            sleep "${TV_PROFILE_RETRY_POLL:-0.5}"
+        done
+        [[ "$(<"$marker")" == "$token" ]] && rm -f "$marker"
+    ) </dev/null >/dev/null 2>&1 &!
+}
+
 _tv_start() {
-    local channel="$1"
+    local channel="$1" retry=1
+    [[ "$2" == noretry ]] && retry=0
+    # A new choice replaces any pending retry for the previous one.
+    _tv_cancel_profile_retry
     local label="$TV_LAUNCH_LABEL"
     local domain="gui/$(id -u)"
     local streamlink="$(command -v streamlink)"
@@ -13,7 +47,8 @@ _tv_start() {
 
     # Validate the channel before waking the TV or switching apps.
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
-    node "$TV_APP_DIR/playback.mjs" prepare || return 1
+    local woke
+    woke=$(node "$TV_APP_DIR/playback.mjs" prepare) || return 1
     python3 "$TV_APP_DIR/settings.py" snapshot || return 1
     local hq address
     hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
@@ -60,7 +95,10 @@ with open(job, "wb") as handle:
         return 1
     fi
 
-    node "$TV_APP_DIR/playback.mjs" play "$channel" && return 0
+    if node "$TV_APP_DIR/playback.mjs" play "$channel"; then
+        [[ "$woke" == woke ]] && (( retry )) && _tv_profile_retry "$channel"
+        return 0
+    fi
     # Nobody connected: do not leave a server waiting on the network.
     grep -qs 'Got HTTP request' "$TV_STREAM_LOG" || launchctl bootout "$domain/$label" 2>/dev/null
     return 1
@@ -339,6 +377,8 @@ EOF
             ;;
 
         stop)
+            # Cancel first: stopping VLC closes the stream, which must not trigger a retry.
+            _tv_cancel_profile_retry
             tv_notice=$(node "$TV_APP_DIR/playback.mjs" stop 2>&1) || tv_notice='VLC: stoppen niet bevestigd; geen verbinding of reactie.'
             if launchctl bootout "$domain/$label" 2>/dev/null; then
                 echo "Streamlink: gestopt."

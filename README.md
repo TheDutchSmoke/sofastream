@@ -46,7 +46,11 @@ Verschijnt bij ontwaken **Wie kijkt er?**, zet dan op de Apple TV eenmalig
 **Instellingen → Profielen en accounts → Kies profiel bij uitschakelen
 sluimerstand** uit ([Apple-uitleg](https://support.apple.com/nl-nl/guide/tv/atvb13056b3d/tvos)).
 Zo kan de kanaalkeuze direct doorgaan naar VLC. SofaStream kiest geen willekeurig
-profiel en stuurt geen blinde OK-toets. Bij een trage ontwaking blijft dezelfde
+profiel en stuurt geen blinde OK-toets. Sluit tvOS VLC doordat je na het wekken een
+profiel kiest, dan opent SofaStream VLC binnen 30 seconden na de start één keer
+opnieuw en herstart de stream. Sluit je in die eerste 30 seconden zelf bewust de
+video, dan gebeurt dat dus ook één keer; `tv stop` of een ander kanaal kiezen
+annuleert het herstarten. Bij een trage ontwaking blijft dezelfde
 startopdracht maximaal 30 seconden proberen VLC te openen, totdat de bediening
 beschikbaar is. De stream wordt pas daarna gestart.
 
@@ -150,9 +154,10 @@ Gebruik bij voorkeur fzf 0.74.4 of nieuwer: oudere versies hebben bekende fouten
 bij het lezen van muisinvoer. CI gebruikt de vastgezette 0.74.4-release en
 controleert de officiële SHA-256 van de download.
 
-De oorspronkelijke VLC-playback is op echte hardware bevestigd. Automatisch
-wekken, stoppen en nieuwe devfuncties moeten nog op hardware worden bevestigd;
-tijdens de ontwikkeling was de tv in gebruik. CI bewijst geen hardwarewerking.
+Op echte hardware bevestigd (15 november 2026): VLC-playback, automatisch wekken
+en VLC openen, en video sluiten op de tv laat de Mac-stream gestopt. Het eenmalig
+herstarten na een profielkeuze moet nog op hardware worden bevestigd.
+CI bewijst geen hardwarewerking.
 
 Bronnen: [Streamlink HTTP-uitvoer](https://streamlink.github.io/cli.html#player-options),
 [pyatv](https://pyatv.dev/documentation/atvremote/),

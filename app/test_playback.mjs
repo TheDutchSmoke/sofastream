@@ -17,6 +17,8 @@ let current = null;
 let available = true;
 let malformed = false;
 let ignoreStop = false;
+// Real VLC on tvOS never answers a WebSocket close frame.
+let ignoreClose = false;
 const preparations = [];
 const requests = [];
 const server = createServer((req, res) => {
@@ -26,9 +28,10 @@ const server = createServer((req, res) => {
       res.writeHead(503).end('Open VLC en zet Afspelen op afstand aan.');
       return;
     }
-    if (!available) preparations.push('prepare');
+    const woke = !available;
+    if (woke) preparations.push('prepare');
     available = true;
-    res.end(JSON.stringify({ host: '127.0.0.1' }));
+    res.end(JSON.stringify({ host: '127.0.0.1', woke }));
     return;
   }
   if (!available) { res.writeHead(503).end(); return; }
@@ -40,7 +43,9 @@ const server = createServer((req, res) => {
   else if (req.url === '/playing' && current) res.end(JSON.stringify({ media: { id: current } }));
   else res.writeHead(404).end();
 });
+const upgraded = new Set();
 server.on('upgrade', (req, socket) => {
+  upgraded.add(socket);
   const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   let pending = Buffer.alloc(0);
@@ -56,7 +61,7 @@ server.on('upgrade', (req, socket) => {
       const content = Buffer.from(pending.subarray(6, 6 + length));
       pending = pending.subarray(6 + length);
       for (let i = 0; i < content.length; i++) content[i] ^= mask[i % 4];
-      if (opcode === 8) { socket.end(Buffer.from([0x88, 0])); return; }
+      if (opcode === 8) { if (!ignoreClose) socket.end(Buffer.from([0x88, 0])); return; }
       assert.equal(opcode, 1);
       const command = JSON.parse(content.toString());
       commands.push(command);
@@ -99,7 +104,7 @@ try {
   assert.match(describeStreamStatus(exited), /niet actief · foutcode 1/);
   assert.match(describeStreamStatus(parseStreamStatus('')), /niet beschikbaar/);
   assert.equal((await invoke('check')).stdout, '');
-  await invoke('prepare');
+  assert.equal((await invoke('prepare')).stdout, '', 'Ready VLC reports no wake');
   console.log('PASS: prepare with VLC ready');
   assert.equal(preparations.length, 0, 'An already available VLC needs no wake command');
   available = false;
@@ -112,7 +117,7 @@ try {
   assert.equal(preparations.length, 0, 'Missing pairing never sends a wake command');
   console.log('PASS: missing pairing');
   await writeFile(configPath, JSON.stringify({ ...testConfig, host: 'localhost' }));
-  try { await invoke('prepare'); } catch (error) {
+  try { assert.equal((await invoke('prepare')).stdout, 'woke\n', 'A wake is reported for the profile retry'); } catch (error) {
     console.error({ preparations, requests });
     throw error;
   }
@@ -128,6 +133,16 @@ try {
   assert.match(activeStatus, /Apple TV: speelt .* in VLC/);
   await invoke('stop');
   assert.equal(current, null);
+  // Without a close reply the command must still return promptly (the TUI waits for it).
+  ignoreClose = true;
+  let started = Date.now();
+  assert.match((await invoke('play')).stdout, /Afspelen gestart/);
+  assert.ok(Date.now() - started < 4000, `play hung ${Date.now() - started} ms after VLC ignored close`);
+  started = Date.now();
+  assert.match((await invoke('stop')).stdout, /tv-stream gestopt/);
+  assert.ok(Date.now() - started < 4000, `stop hung ${Date.now() - started} ms after VLC ignored close`);
+  ignoreClose = false;
+  console.log('PASS: play/stop return although VLC ignores close');
   assert.match((await invoke('status')).stdout, /geen actieve weergave/);
   current = 'http://example.invalid/unrelated';
   await invoke('stop');
@@ -155,6 +170,7 @@ try {
   console.log('PASS: automatic wake/ready flow, pairing errors, changed IP, opt-out, local stream status, VLC playback, scoped stop and Streamlink failure.');
 } finally {
   server.closeAllConnections();
+  for (const socket of upgraded) socket.destroy();
   await new Promise(resolve => server.close(resolve));
   await rm(folder, { recursive: true, force: true });
 }
