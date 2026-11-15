@@ -77,7 +77,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         pyatv.connect.return_value = atv
         with patch.object(remote, "discover", AsyncMock(return_value=found)), patch.object(remote.asyncio, "sleep", AsyncMock()):
             result = await remote.prepare_vlc(self.config, self.storage, AsyncMock(side_effect=[False, True]))
-        self.assertEqual(result, {"host": "192.0.2.20"})
+        self.assertEqual(result, {"host": "192.0.2.20", "woke": True})
         atv.power.turn_on.assert_awaited_once_with()
         self.assertEqual(atv.apps.app_list.await_count, 3)
         atv.apps.launch_app.assert_awaited_once_with("org.videolan.vlc")
@@ -126,7 +126,8 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         atv = self.controller()
         pyatv.connect.side_effect = [OSError("stale address"), atv]
         with patch.object(remote, "discover", AsyncMock(return_value=found)) as discover:
-            await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=True))
+            result = await remote.prepare_vlc(self.config, self.storage, AsyncMock(return_value=True))
+        self.assertFalse(result["woke"], "An already open VLC was not woken")
         discover.assert_awaited_once()
         self.assertEqual(pyatv.connect.await_count, 2)
         atv.power.turn_on.assert_not_called()

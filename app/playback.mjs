@@ -45,8 +45,11 @@ async function prepare() {
   const helper = fileURLToPath(new URL('./remote.py', import.meta.url));
   try {
     const result = await runFile(python, [helper, 'prepare'], { timeout: 90000, maxBuffer: 8192 });
-    config.host = JSON.parse(result.stdout).host;
+    const prepared = JSON.parse(result.stdout);
+    config.host = prepared.host;
     base = new URL(`http://${config.host}:${config.port}/`);
+    // tv.zsh uses this to retry once when a wake-time profile choice closes VLC.
+    if (prepared.woke === true) console.log('woke');
   } catch (error) {
     if (error.code === 'ENOENT') throw new Error('Automatische Apple TV-bediening ontbreekt. Installeer SofaStream opnieuw.');
     const message = String(error.stderr || '').trim().replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
@@ -103,6 +106,15 @@ async function connect() {
   });
 }
 
+// VLC on tvOS never answers the close frame; without a bound, node stays alive
+// until VLC drops the connection (the end of the video) and the TUI waits on it.
+async function closeSocket(socket) {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise(resolve => socket.addEventListener('close', resolve, { once: true }));
+  socket.close();
+  await Promise.race([closed, delay(1000)]);
+}
+
 async function playing() {
   const response = await request('/playing');
   if (response.status === 404) return null;
@@ -140,7 +152,7 @@ async function openStream(channel) {
     }
     throw new Error(`Stream verzonden naar ${config.name}; VLC bevestigt nog geen beeld. Bekijk Streamlog.`);
   } finally {
-    socket.close();
+    await closeSocket(socket);
   }
 }
 
@@ -196,7 +208,7 @@ async function stop() {
     }
     throw new Error('VLC bevestigt het stoppen nog niet.');
   } finally {
-    socket.close();
+    await closeSocket(socket);
   }
 }
 
@@ -214,3 +226,5 @@ try {
   console.error(error.message);
   process.exitCode = 1;
 }
+// Safety net: only fires if a socket still holds the event loop open.
+setTimeout(() => process.exit(), 1000).unref();
