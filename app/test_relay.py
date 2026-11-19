@@ -141,6 +141,15 @@ class RelayProcess(unittest.TestCase):
     def cli(self, *args):
         return subprocess.run([sys.executable, "-I", str(RELAY), *args], capture_output=True, text=True, timeout=30)
 
+    def wait_log(self, text, timeout=8):
+        self.assertTrue(self.wait_for(lambda: text in self.log(), timeout), f"{text!r} not in relay log:\n{self.log()}")
+
+    def ended(self, process, timeout=10):
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.fail(f"relay still running after {timeout} s; log:\n{self.log()}")
+
     def wait_for(self, condition, timeout=8):
         until = time.monotonic() + timeout
         while time.monotonic() < until:
@@ -176,7 +185,7 @@ class RelayProcess(unittest.TestCase):
 
     def test_a_viewer_starts_at_tables_and_keyframe_and_keeps_its_connection_across_a_switch(self):
         process = self.start()
-        self.assertTrue(self.wait_for(lambda: "Bron: one · 1080p60" in self.log()), self.log())
+        self.wait_log("Bron: one · 1080p60")
         client, body = self.viewer()
         body = self.read(client, body, b"one_")
         self.assertEqual(body[:3 * PACKET], relay.set_table_version(PAT + PMT, 1) + KEYFRAME,
@@ -192,11 +201,11 @@ class RelayProcess(unittest.TestCase):
         self.assertIn("Bron: two", self.log())
         client.close()
         process.terminate()
-        process.wait(timeout=10)
+        self.ended(process, 10)
 
     def test_a_probe_connection_does_not_end_the_stream(self):
         process = self.start()
-        self.assertTrue(self.wait_for(lambda: "Bron:" in self.log()))
+        self.wait_log("Bron:")
         probe, _ = self.viewer()
         probe.close()  # VLC opens with a short probe, then connects again
         client, body = self.viewer()
@@ -206,7 +215,7 @@ class RelayProcess(unittest.TestCase):
 
     def test_a_channel_that_does_not_start_leaves_the_current_one_playing(self):
         self.start()
-        self.assertTrue(self.wait_for(lambda: "Bron:" in self.log()))
+        self.wait_log("Bron:")
         client, body = self.viewer()
         self.cli("send", self.socket, "switch", "offline", "0")
         self.assertEqual(self.cli("wait", self.socket, "offline", "10").returncode, 2)
@@ -217,31 +226,31 @@ class RelayProcess(unittest.TestCase):
 
     def test_without_a_viewer_the_relay_ends_and_stops_its_source(self):
         process = self.start(idle_first=1)
-        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual(self.ended(process, 10), 0)
         self.assertIn("Geen kijker meer", self.log())
         self.assertFalse(self.running("one"))
         self.assertFalse(os.path.exists(self.socket))
 
     def test_a_viewer_leaving_is_logged_and_ends_the_relay(self):
         process = self.start(idle_after=4)
-        self.assertTrue(self.wait_for(lambda: "Bron:" in self.log()))
+        self.wait_log("Bron:")
         client, _ = self.viewer()
         client.close()
-        self.assertEqual(process.wait(timeout=15), 0)
+        self.assertEqual(self.ended(process, 15), 0)
         log = self.log()
         self.assertIn("Got HTTP request from VLC/3.0.24", log)
         self.assertIn("HTTP connection closed", log, "tv.zsh's profile retry looks for this line")
 
     def test_sigterm_stops_the_source(self):
         process = self.start()
-        self.assertTrue(self.wait_for(lambda: "Bron:" in self.log()))
+        self.wait_log("Bron:")
         process.send_signal(signal.SIGTERM)
-        process.wait(timeout=10)
+        self.ended(process, 10)
         self.assertTrue(self.wait_for(lambda: not self.running("one")))
 
     def test_an_offline_first_channel_ends_the_relay(self):
         process = self.start(channel="offline")
-        process.wait(timeout=10)
+        self.ended(process, 10)
         self.assertIn("error: No playable streams found", self.log())
 
     def test_a_busy_port_is_reported_in_streamlink_error_form(self):
@@ -249,7 +258,7 @@ class RelayProcess(unittest.TestCase):
             busy.bind(("127.0.0.1", self.port))
             busy.listen()
             process = self.start()
-            self.assertEqual(process.wait(timeout=10), 1)
+            self.assertEqual(self.ended(process, 10), 1)
         self.assertIn("error: Failed to create HTTP server", self.log())
 
     def test_cli_reports_a_missing_relay(self):
