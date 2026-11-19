@@ -15,6 +15,8 @@ class Commands(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.trace = self.root/'launches'
+        # node and launchctl calls in order, to check what happens before the port reopens.
+        self.calls = self.root/'calls'
         self.log = self.root/'stream.log'
         self.log.write_text('existing stream log')
         actual = Path(__file__).with_name('tui.py')
@@ -36,6 +38,7 @@ tui.main()
         self.script = self.root/'commands.zsh'
         self.script.write_text(source + f'''
 node() {{
+    print -r -- "node $2" >> {shlex.quote(str(self.calls))}
     if [[ "$TV_TEST_VLC" == unavailable ]]; then
         echo 'Open VLC en zet Afspelen op afstand aan.' >&2
         return 1
@@ -43,21 +46,28 @@ node() {{
     [[ "$2" == address ]] && echo 192.0.2.5
     [[ "$2" == prepare && -n "$TV_TEST_WOKE" ]] && echo woke
     [[ "$2" == play && -n "$TV_TEST_VIEWER" ]] && echo '[cli][info] Got HTTP request from VLC/3.0' >> "$TV_STREAM_LOG"
+    [[ "$2" == release && -n "$TV_TEST_RELEASE_FAIL" ]] && {{ echo 'VLC stopt de vorige stream niet.' >&2; return 1; }}
     [[ "$2" == play && -n "$TV_TEST_PLAY_FAIL" ]] && {{ echo 'VLC bevestigt nog geen beeld.' >&2; return 1; }}
+    [[ "$2" == play && -n "$TV_TEST_PLAY_DROP" ]] && {{
+        print -l '[cli][info] Got HTTP request from VLC/3.0' '[cli][info] HTTP connection closed' >> "$TV_STREAM_LOG"
+        echo 'VLC op Test TV verbrak de stream direct.' >&2
+        return 3
+    }}
     [[ "$2" == play ]] && echo "Speelt: $3"
     [[ "$2" == stop ]] && echo 'VLC: tv-stream gestopt.'
     return 0
 }}
 launchctl() {{
     print -r -- "$*" >> {shlex.quote(str(self.trace))}
+    print -r -- "launchctl $1" >> {shlex.quote(str(self.calls))}
     return 0
 }}
 tv "$@"
 ''')
 
-    def run_tv(self, *args, unavailable=False, play_fails=False, viewer=False, woke=False):
+    def run_tv(self, *args, unavailable=False, play_fails=False, viewer=False, woke=False, release_fails=False, drops=False):
         return subprocess.run(['zsh','-f',str(self.script),*args], text=True, capture_output=True,
-                              env={**os.environ, 'TV_TEST_WOKE': '1' if woke else '', 'TV_PROFILE_RETRY_WINDOW': '3', 'TV_PROFILE_RETRY_POLL': '0.1', 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_TEST_PLAY_FAIL': '1' if play_fails else '', 'TV_TEST_VIEWER': '1' if viewer else '','TV_CACHE_DIR': str(self.root/'cache'), 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_APPLE_TV_CONFIG': str(self.root/'apple-tv.json'), 'TV_ACTIVE_TV_CONFIG': str(self.root/'active.json'), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}, timeout=5)
+                              env={**os.environ, 'TV_TEST_WOKE': '1' if woke else '', 'TV_TEST_RELEASE_FAIL': '1' if release_fails else '', 'TV_TEST_PLAY_DROP': '1' if drops else '', 'TV_PROFILE_RETRY_WINDOW': '3', 'TV_PROFILE_RETRY_POLL': '0.1', 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_TEST_PLAY_FAIL': '1' if play_fails else '', 'TV_TEST_VIEWER': '1' if viewer else '','TV_CACHE_DIR': str(self.root/'cache'), 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_APPLE_TV_CONFIG': str(self.root/'apple-tv.json'), 'TV_ACTIVE_TV_CONFIG': str(self.root/'active.json'), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}, timeout=5)
 
     def test_invalid_offline_and_unreachable_tv_preserve_existing_stream(self):
         for channel, unavailable in [('bad name', False), ('offline', False), ('star', True)]:
@@ -92,6 +102,40 @@ tv "$@"
         result = self.run_tv('star', play_fails=True, viewer=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(self.trace.read_text().splitlines()[-1].startswith('bootstrap '))
+
+    def test_vlc_releases_previous_stream_before_the_port_reopens(self):
+        result = self.run_tv('star')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text().splitlines()
+        self.assertEqual(calls[calls.index('node prepare') + 1], 'node release', calls)
+        self.assertLess(calls.index('node release'), calls.index('launchctl bootout'), calls)
+        self.assertLess(calls.index('launchctl bootstrap'), calls.index('node play'), calls)
+
+    def test_release_failure_keeps_the_current_stream(self):
+        result = self.run_tv('star', release_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stopt de vorige stream niet', result.stderr)
+        self.assertFalse(self.trace.exists(), 'No bootout or bootstrap after a failed release')
+        self.assertEqual(self.log.read_text(), 'existing stream log')
+
+    def test_dropped_stream_is_reported_not_retried_without_wake(self):
+        result = self.run_tv('star', drops=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('verbrak de stream direct', result.stderr)
+        self.assertNotIn('Speelt', result.stdout)
+        time.sleep(1)
+        self.assertEqual(self.starts(), 1)
+
+    def test_dropped_stream_right_after_wake_restarts_once(self):
+        result = self.run_tv('star', woke=True, drops=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('één keer opnieuw', result.stdout)
+        self.assertNotIn('verbrak', result.stdout + result.stderr)
+        self.assertEqual(self.wait_for_starts(2), 2)
+        # The restart drops again: it reports the error and does not loop.
+        time.sleep(1)
+        self.assertEqual(self.starts(), 2)
+        self.assertIn('verbrak de stream direct', (self.root/'cache'/'profile-retry.log').read_text())
 
     def test_cli_favorites_duplicate_remove_and_list(self):
         self.assertIn('opgeslagen', self.run_tv('fav','add','@Star').stdout)

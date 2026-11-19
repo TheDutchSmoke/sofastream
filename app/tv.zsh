@@ -49,6 +49,10 @@ _tv_start() {
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     local woke
     woke=$(node "$TV_APP_DIR/playback.mjs" prepare) || return 1
+    # Let VLC drop the previous SofaStream item before its port reopens; otherwise
+    # VLC reconnects to it and takes the new stream's only connection. Runs before
+    # the snapshot, so it addresses the Apple TV of the previous session.
+    node "$TV_APP_DIR/playback.mjs" release || return 1
     python3 "$TV_APP_DIR/settings.py" snapshot || return 1
     local hq address
     hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
@@ -95,10 +99,21 @@ with open(job, "wb") as handle:
         return 1
     fi
 
-    if node "$TV_APP_DIR/playback.mjs" play "$channel"; then
+    local played=0 output
+    output=$(node "$TV_APP_DIR/playback.mjs" play "$channel" 2>&1) || played=$?
+    # 3: VLC dropped the stream at once. Right after a wake that is likely the
+    # profile choice closing VLC; the profile retry sees the close and restarts once.
+    if (( played == 3 )) && [[ "$woke" == woke ]] && (( retry )); then
+        echo "Apple TV is net gewekt en VLC sloot direct; SofaStream start het kanaal één keer opnieuw."
+        _tv_profile_retry "$channel"
+        return 0
+    fi
+    if (( played == 0 )); then
+        [[ -n "$output" ]] && print -r -- "$output"
         [[ "$woke" == woke ]] && (( retry )) && _tv_profile_retry "$channel"
         return 0
     fi
+    [[ -n "$output" ]] && print -r -- "$output" >&2
     # Nobody connected: do not leave a server waiting on the network.
     grep -qs 'Got HTTP request' "$TV_STREAM_LOG" || launchctl bootout "$domain/$label" 2>/dev/null
     return 1

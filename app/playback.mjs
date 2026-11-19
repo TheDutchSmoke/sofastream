@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { getStreamStatus, describeStreamStatus } from './stream-status.mjs';
 
 const selectedPath = process.env.TV_APPLE_TV_CONFIG || join(process.env.TV_CONFIG_DIR || join(homedir(), '.config/tv'), 'apple-tv.json');
-const activePath = ['address', 'play', 'stop', 'status'].includes(process.argv[2]) && process.env.TV_ACTIVE_TV_CONFIG;
+const activePath = ['address', 'release', 'play', 'stop', 'status'].includes(process.argv[2]) && process.env.TV_ACTIVE_TV_CONFIG;
 const selectedConfig = () => readFile(selectedPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; });
 const config = JSON.parse(activePath ? await readFile(activePath, 'utf8').catch(selectedConfig) : await selectedConfig());
 config.streamPort = Number(process.env.TV_STREAM_PORT || config.streamPort || 8765);
@@ -77,7 +77,7 @@ async function localAddress() {
 async function streamReady(timeout = 10000) {
   const until = Date.now() + timeout;
   while (Date.now() < until) {
-    const log = await readFile(process.env.TV_STREAM_LOG || '/tmp/streamlink-tv.log', 'utf8').catch(() => '');
+    const log = await streamLog();
     const error = log.split('\n').find(line => /\[error\]|No playable streams/i.test(line));
     if (error) throw new Error(`Streamlink: ${error.replace(/^.*?\[error\]\s*/, '')}`);
     if (log.includes('Starting server')) return;
@@ -126,26 +126,83 @@ async function playing() {
   return state;
 }
 
+async function waitIdle() {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (!await playing()) return true;
+    await delay(100);
+  }
+  return false;
+}
+
+// A SofaStream URL on this Mac and port, whichever channel or session it was.
+async function ownStream(state) {
+  let url;
+  try { url = new URL(state.media.id); } catch { return false; /* An unrelated local file. */ }
+  return url.port === String(config.streamPort) && url.hostname === await localAddress();
+}
+
+// Thrown when VLC accepted the URL but dropped the connection; tv.zsh reads exit code 3.
+class DroppedStream extends Error {
+  exitCode = 3;
+}
+
+const streamLog = () => readFile(process.env.TV_STREAM_LOG || '/tmp/streamlink-tv.log', 'utf8').catch(() => '');
+
+// VLC confirms a URL before it has read any video, so its status alone is not
+// proof of playback. Streamlink accepts one connection: if VLC drops it right
+// away, the Mac stream has already ended and the TV stays black.
+async function streamHolds() {
+  const until = Date.now() + Number(process.env.TV_STREAM_CONNECT_MS || 5000);
+  while (!(await streamLog()).includes('Got HTTP request')) {
+    if (Date.now() > until) throw new Error(`VLC op ${config.name} haalt de stream niet op. Sluit VLC op de Apple TV en kies het kanaal opnieuw.`);
+    await delay(100);
+  }
+  await delay(Number(process.env.TV_STREAM_HOLD_MS || 1500));
+  if (/HTTP connection closed|Stream ended/.test(await streamLog())) {
+    throw new DroppedStream(`VLC op ${config.name} verbrak de stream direct. Sluit VLC op de Apple TV (twee keer op de tv-knop, VLC omhoog vegen) en kies het kanaal opnieuw.`);
+  }
+}
+
+// Run before the Mac stream restarts. A VLC item that still points at the old
+// stream reconnects to the port as soon as the new server listens, takes the
+// single connection Streamlink accepts, and is then cut off by the stop sent
+// before openURL: the new stream ends before it reaches the TV.
+async function release() {
+  try { await check(); } catch { return; } // Asleep or VLC closed: nothing holds the port.
+  const state = await playing();
+  if (!state || !await ownStream(state)) return;
+  const socket = await connect();
+  try {
+    socket.send(JSON.stringify({ type: 'ended' }));
+    if (!await waitIdle()) throw new Error('VLC stopt de vorige stream niet; je huidige stream blijft ongewijzigd. Sluit VLC op de Apple TV en probeer opnieuw.');
+  } finally {
+    await closeSocket(socket);
+  }
+}
+
 async function openStream(channel) {
   await check();
   await streamReady();
   const address = await localAddress();
-  const url = `http://${address}:${config.streamPort}/`;
+  // A fresh path per session: VLC's status then names this session, never an
+  // older item that happens to use the same port. Streamlink ignores the path.
+  const url = `http://${address}:${config.streamPort}/${encodeURIComponent(channel)}-${Date.now().toString(36)}`;
   const socket = await connect();
   try {
-    // VLC's openURL appends to its queue while playing, so stop before opening.
-    socket.send(JSON.stringify({ type: 'ended' }));
-    let stopped = false;
-    for (let attempt = 0; attempt < 10; attempt++) {
-      if (!await playing()) { stopped = true; break; }
-      await delay(100);
+    // VLC's openURL appends to its queue while playing, so stop other media first.
+    if (await playing()) {
+      socket.send(JSON.stringify({ type: 'ended' }));
+      if (!await waitIdle()) throw new Error('VLC stopt de vorige video niet. Probeer de kanaalkeuze opnieuw.');
+      // VLC can report idle before its player has fully closed; let that finish
+      // so it cannot close the new item.
+      await delay(Number(process.env.TV_VLC_SETTLE_MS ?? 500));
     }
-    if (!stopped) throw new Error('VLC stopt de vorige video niet. Probeer de kanaalkeuze opnieuw.');
     socket.send(JSON.stringify({ type: 'openURL', url }));
     for (let attempt = 0; attempt < 25; attempt++) {
       await delay(300);
       const state = await playing();
       if (state?.media?.id === url) {
+        await streamHolds();
         console.log(`▶ Afspelen gestart: ${channel} in VLC op ${config.name}.`);
         return;
       }
@@ -174,13 +231,13 @@ async function status() {
   } else if (!state) {
     console.log('Apple TV: geen actieve weergave gemeld door VLC.');
   } else {
-    let ownStream = false;
+    let own = false;
     try {
       const url = new URL(state.media?.id);
       const addresses = Object.values(networkInterfaces()).flat().map(item => item.address);
-      ownStream = url.port === String(config.streamPort) && addresses.includes(url.hostname);
+      own = url.port === String(config.streamPort) && addresses.includes(url.hostname);
     } catch { /* Other VLC media can have non-URL identifiers. */ }
-    const title = (ownStream && stream.channel) || state.media?.title || (ownStream ? 'tv-stream' : 'media');
+    const title = (own && stream.channel) || state.media?.title || (own ? 'tv-stream' : 'media');
     const safeTitle = String(title).replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
     console.log(`Apple TV: speelt ${safeTitle} in VLC.`);
   }
@@ -190,23 +247,16 @@ async function stop() {
   await check();
   const state = await playing();
   if (!state) { console.log('VLC: geen actieve tv-stream.'); return; }
-  let url;
-  try { url = new URL(state.media.id); } catch { /* An unrelated local file. */ }
-  if (!url || url.port !== String(config.streamPort) || url.hostname !== await localAddress()) {
+  if (!await ownStream(state)) {
     console.log('VLC: andere media blijven spelen.');
     return;
   }
   const socket = await connect();
   socket.send(JSON.stringify({ type: 'ended' }));
   try {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await delay(100);
-      if (!await playing()) {
-        console.log('VLC: tv-stream gestopt.');
-        return;
-      }
-    }
-    throw new Error('VLC bevestigt het stoppen nog niet.');
+    await delay(100);
+    if (!await waitIdle()) throw new Error('VLC bevestigt het stoppen nog niet.');
+    console.log('VLC: tv-stream gestopt.');
   } finally {
     await closeSocket(socket);
   }
@@ -217,14 +267,15 @@ try {
     case 'check': await check(); break;
     case 'prepare': await prepare(); break;
     case 'address': console.log(await localAddress()); break;
+    case 'release': await release(); break;
     case 'play': await openStream(process.argv[3] || 'Kanaal'); break;
     case 'status': await status(); break;
     case 'stop': await stop(); break;
-    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|address|play|status|stop`);
+    default: throw new Error(`Gebruik: node ${fileURLToPath(import.meta.url)} check|prepare|address|release|play|status|stop`);
   }
 } catch (error) {
   console.error(error.message);
-  process.exitCode = 1;
+  process.exitCode = error.exitCode || 1;
 }
 // Safety net: only fires if a socket still holds the event loop open.
 setTimeout(() => process.exit(), 1000).unref();

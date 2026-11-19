@@ -88,6 +88,10 @@ Streamlink-log meldt dan waarom. Een andere dienstnaam kan met
 - Video sluiten op de tv sluit de Mac-stream zodra VLC de HTTP-verbinding verbreekt.
 - De melding ‘Afspelen gestart’ is een bevestiging van die actie; ‘Status’ is een
   gedateerde momentopname. De bovenrand geeft de actuele Mac-status.
+- Bij een ander kanaal laat VLC eerst de vorige stream los, en pas daarna start de
+  nieuwe. ‘Afspelen gestart’ verschijnt pas als VLC de stream ook echt ophaalt.
+  Verbreekt VLC hem meteen, dan zegt SofaStream dat: sluit VLC dan op de Apple TV
+  (twee keer op de tv-knop, VLC omhoog vegen) en kies het kanaal opnieuw.
 
 `tv --help` toont de commando's. `tv stop` stopt alleen de eigen stream. Sluiten van
 de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
@@ -157,6 +161,10 @@ controleert de officiële SHA-256 van de download.
 Op echte hardware bevestigd (15 november 2026): VLC-playback, automatisch wekken
 en VLC openen, en video sluiten op de tv laat de Mac-stream gestopt. Het eenmalig
 herstarten na een profielkeuze moet nog op hardware worden bevestigd.
+Op 19 november verbrak VLC 3.0.24 na een kanaalwissel elke nieuwe stream na 0,3 s,
+tot VLC opnieuw werd geopend. De verbinding kwam sneller binnen dan de afspeelopdracht,
+dus waarschijnlijk haalde VLC de oude stream opnieuw op. De volgorde ‘eerst VLC loslaten, dan Streamlink herstarten’ moet
+nog op hardware worden bevestigd.
 CI bewijst geen hardwarewerking.
 
 Bronnen: [Streamlink HTTP-uitvoer](https://streamlink.github.io/cli.html#player-options),
