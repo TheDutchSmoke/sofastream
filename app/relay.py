@@ -296,6 +296,16 @@ class Relay:
             source.stop()
 
 
+class StreamServer(ThreadingHTTPServer):
+    """HTTPServer.server_bind looks up the host's FQDN (reverse DNS), which can stall for
+    a long time; the relay never needs a server name."""
+    daemon_threads = True
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def viewer_handler(relay):
     class Viewer(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"
@@ -361,11 +371,10 @@ def serve(args):
         sys.exit("Ongeldige kanaalnaam.")
     relay = Relay(args)
     try:
-        stream = ThreadingHTTPServer((args.listen, args.port), viewer_handler(relay))
+        stream = StreamServer((args.listen, args.port), viewer_handler(relay))
     except OSError as error:
         out(f"error: Failed to create HTTP server: {error.strerror or error}")
         sys.exit(1)
-    stream.daemon_threads = True
     try:
         os.unlink(args.control)
     except FileNotFoundError:
