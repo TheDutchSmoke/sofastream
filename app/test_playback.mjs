@@ -211,10 +211,19 @@ try {
   current = null;
   assert.match((await invoke('play')).stdout, /Afspelen gestart/);
   console.log('PASS: a dropped or unopened stream is not reported as playing');
-  await writeFile(logPath, '[cli][error] No playable streams found\n');
+  // Real Streamlink 8.6.3 output: a plain 'error:' line, not a '[cli][error]' log line.
+  await writeFile(logPath, '[cli][info] Found matching plugin twitch for URL https://www.twitch.tv/star\nerror: No playable streams found on this URL: https://www.twitch.tv/star\n');
   const beforeFailure = commands.length;
-  await assert.rejects(invoke('play'), error => /No playable streams/.test(error.stderr));
+  await assert.rejects(invoke('play'), error => /^Streamlink: No playable streams/.test(error.stderr));
   assert.equal(commands.length, beforeFailure);
+  await writeFile(logPath, '[cli][info] Available streams: 720p60, 1080p60 (best)\nerror: Failed to create HTTP server: [Errno 48] Address already in use\n');
+  let failedAt = Date.now();
+  await assert.rejects(invoke('play'), error => /Address already in use/.test(error.stderr) && /Poort 8765 is nog bezet/.test(error.stderr));
+  assert.ok(Date.now() - failedAt < 2000, `a Streamlink error took ${Date.now() - failedAt} ms to surface`);
+  assert.equal(commands.length, beforeFailure);
+  await writeFile(logPath, '[cli][error] Try 1/1: Could not open stream\n');
+  await assert.rejects(invoke('play'), error => /^Streamlink: Try 1\/1/.test(error.stderr));
+  console.log('PASS: Streamlink errors surface at once');
   available = false;
   await assert.rejects(invoke('check'), error => /Afspelen op afstand/.test(error.stderr));
   const unavailableStatus = (await invoke('status')).stdout;

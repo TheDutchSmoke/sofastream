@@ -78,8 +78,15 @@ async function streamReady(timeout = 10000) {
   const until = Date.now() + timeout;
   while (Date.now() < until) {
     const log = await streamLog();
-    const error = log.split('\n').find(line => /\[error\]|No playable streams/i.test(line));
-    if (error) throw new Error(`Streamlink: ${error.replace(/^.*?\[error\]\s*/, '')}`);
+    // Streamlink ends with a plain 'error: …' line; '[…][error]' is a log line.
+    const error = log.split('\n').find(line => /^error: |\[error\]|No playable streams/i.test(line));
+    if (error) {
+      const message = error.replace(/^(.*?\[error\]\s*|error:\s*)/, '');
+      const hint = /Address already in use/i.test(message)
+        ? ` Poort ${config.streamPort} is nog bezet; stop de vorige stream (Beheer → Stoppen) en probeer opnieuw.`
+        : '';
+      throw new Error(`Streamlink: ${message}${hint}`);
+    }
     if (log.includes('Starting server')) return;
     await delay(200);
   }
