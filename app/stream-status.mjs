@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const run = promisify(execFile);
@@ -16,12 +18,28 @@ export function parseStreamStatus(output) {
   return { state: 'unknown' };
 }
 
+// The quality Streamlink serves to the TV, e.g. '1440p60 · 2K'. The log belongs to the
+// current session (tv.zsh removes it on every start); null until VLC connects.
+export function parseStreamQuality(log) {
+  const name = [...String(log).matchAll(/^\[cli\]\[info\] Opening stream: (\S+) \(/gm)].at(-1)?.[1];
+  if (!name || !/^[\w.+-]{1,32}$/.test(name)) return null;
+  const height = Number(name.match(/^(\d+)p/)?.[1]);
+  return height >= 2160 ? `${name} · 4K` : height >= 1440 ? `${name} · 2K` : name;
+}
+
+async function streamQuality() {
+  const path = process.env.TV_STREAM_LOG || join(process.env.TV_CACHE_DIR || join(homedir(), '.cache/tv'), 'stream.log');
+  return parseStreamQuality(await readFile(path, 'utf8').catch(() => ''));
+}
+
 export async function getStreamStatus() {
   try {
     const { stdout } = await run('/bin/launchctl', ['print', `gui/${process.getuid()}/${process.env.TV_LAUNCH_LABEL || "nl.tristan.streamlink-tv"}`], {
       timeout: 1500, maxBuffer: 65536,
     });
-    return parseStreamStatus(stdout);
+    const stream = parseStreamStatus(stdout);
+    if (stream.state === 'running') stream.quality = await streamQuality();
+    return stream;
   } catch (error) {
     if (/Could not find service|service not found/i.test(error.stderr || '')) return { state: 'stopped' };
     return { state: 'unknown' };
@@ -30,7 +48,7 @@ export async function getStreamStatus() {
 
 export function describeStreamStatus(stream) {
   if (stream.state === 'running') {
-    return `Streamlink: actief${stream.channel ? ` · ${stream.channel}` : ''} · PID ${stream.pid}.`;
+    return `Streamlink: actief${stream.channel ? ` · ${stream.channel}` : ''}${stream.quality ? ` · ${stream.quality}` : ''} · PID ${stream.pid}.`;
   }
   if (stream.state === 'stopped') {
     return `Streamlink: niet actief${stream.exitCode && stream.exitCode !== '0' ? ` · foutcode ${stream.exitCode}` : ''}.`;
@@ -44,7 +62,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   do {
     const stream = await getStreamStatus();
     if (process.argv[2] === '--label') {
-      const label = stream.state === 'running' ? `ACTIEF · ${stream.channel || 'stream'}`
+      const label = stream.state === 'running' ? `ACTIEF · ${stream.channel || 'stream'}${stream.quality ? ` · ${stream.quality}` : ''}`
         : stream.state === 'stopped' ? 'GESTOPT' : 'STATUS ONBEKEND';
       process.stdout.write(` SOFASTREAM${process.env.TV_DEV_MODE ? ' @DEV' : ''} · ${label} \n`);
     } else {
