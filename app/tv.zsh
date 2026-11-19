@@ -79,11 +79,11 @@ _tv_start() {
     local superseded="Vervangen door een nieuwere kanaalkeuze of stop."
 
     [[ -z "$streamlink" ]] && {
-        echo "❌ Streamlink niet gevonden."
+        echo "✕ Streamlink niet gevonden."
         return 1
     }
     [[ -z "$ffmpeg" ]] && {
-        echo "❌ ffmpeg niet gevonden. Installeer met: brew install ffmpeg"
+        echo "✕ ffmpeg niet gevonden. Installeer met: brew install ffmpeg"
         return 1
     }
 
@@ -111,7 +111,7 @@ _tv_start() {
     # Serve only on the Mac address that reaches the Apple TV, not on every network.
     address=$(node "$TV_APP_DIR/playback.mjs" address) || return 1
     [[ "$address" =~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' ]] || {
-        echo "❌ Lokaal netwerkadres richting Apple TV niet gevonden."
+        echo "✕ Lokaal netwerkadres richting Apple TV niet gevonden."
         return 1
     }
 
@@ -123,15 +123,15 @@ _tv_start() {
     if read -r relay_channel relay_pending relay_viewers relay_version <<< "$(_tv_relay query)" && [[ -n "$relay_viewers" ]] \
         && [[ -z "$version" || "$relay_version" == "$version" ]]; then
         if [[ "$relay_channel" != "$channel" || "$relay_pending" != - ]]; then
-            _tv_relay send switch "$channel" "$hq" >/dev/null || { echo "❌ Wisselen mislukt."; return 1; }
+            _tv_relay send switch "$channel" "$hq" >/dev/null || { echo "✕ Wisselen mislukt."; return 1; }
         fi
         if (( relay_viewers > 0 )); then
             local switched=0
             _tv_relay wait "$channel" "${TV_SWITCH_WAIT:-25}" || switched=$?
             case $switched in
                 0) echo "▶ Gewisseld naar $channel op de tv." ;;
-                2) echo "❌ $channel start niet; het vorige kanaal blijft spelen. Bekijk Beheer → Streamlog." ;;
-                *) echo "❌ Wisselen naar $channel niet bevestigd. Bekijk Beheer → Streamlog." ;;
+                2) echo "✕ $channel start niet; het vorige kanaal blijft spelen. Bekijk Beheer → Streamlog." ;;
+                *) echo "✕ Wisselen naar $channel niet bevestigd. Bekijk Beheer → Streamlog." ;;
             esac
             return $(( switched != 0 ))
         fi
@@ -166,7 +166,7 @@ with open(job, "wb") as handle:
             --control "$(_tv_relay_socket)" \
             --stream-script "$TV_APP_DIR/stream.zsh" --streamlink "$streamlink" --ffmpeg "$ffmpeg" \
             --service "$TV_TWITCH_KEYCHAIN_SERVICE" --channel "$channel" --hq "$hq" --version "$version" || {
-                echo "❌ Starten mislukt."
+                echo "✕ Starten mislukt."
                 return 1
             }
 
@@ -177,7 +177,7 @@ with open(job, "wb") as handle:
             sleep 0.1
         done
         if (( ! started )); then
-            echo "❌ Starten mislukt."
+            echo "✕ Starten mislukt."
             return 1
         fi
         if ! _tv_owns_session "$session"; then
@@ -211,10 +211,81 @@ with open(job, "wb") as handle:
 
 _tv_menu() {
     command -v fzf >/dev/null || {
-        echo "❌ fzf ontbreekt. Installeer met: brew install fzf"
+        echo "✕ fzf ontbreekt. Installeer met: brew install fzf"
         return 1
     }
     _tv_fullscreen _tv_menu_loop
+}
+
+# The menu is a Teletekst page (DESIGN.md): black, nine 256-colour cube colours, a page
+# number and running clock on top, coloured buttons below. Every fzf call shares this look.
+_tv_fzf_colors='bg:16,fg:231,bg+:21,fg+:231:bold,hl:-1:underline,hl+:-1:underline,border:16,input-border:16,list-border:16,label:231,input-label:231,header:231,footer:231,prompt:51,query:231:regular,disabled:231:regular,ghost:30:regular,pointer:226,info:30,spinner:46,gutter:16'
+
+# Search row info: match count while searching, otherwise the time of the Twitch snapshot.
+_tv_fzf_info='if [ -n "$FZF_QUERY" ]; then if [ "$FZF_MATCH_COUNT" = 0 ]; then printf "Geen resultaten · Esc wist"; else printf "%s van %s" "$FZF_MATCH_COUNT" "$FZF_TOTAL_COUNT"; fi; elif [ -n "$TV_TUI_STAND_FILE" ] && read -r stand < "$TV_TUI_STAND_FILE" 2>/dev/null; then printf "stand %s" "$stand"; fi'
+
+# fzf with the shared page: two invisible borders carry the page row (clock) and the stream
+# row (polled every 2 s from launchd and the relay log; it never contacts the TV). Binds
+# and commands run in POSIX sh. Usage: _tv_fzf PAGE [fzf options…]
+_tv_fzf() {
+    local page="$1"
+    shift
+    local tick='start,every(1)'
+    [[ "$TV_TUI_MOTION" == 0 ]] && tick=start
+    local -a style=(
+        --ansi --height=100% --layout=reverse
+        --border=top --border-label=' ' --border-label-pos=3
+        --input-border=top --input-label=' ' --input-label-pos=3
+        --no-separator --no-scrollbar --info=inline-right
+        --pointer='▸' --gutter=' ' --highlight-line --cycle --ellipsis='…'
+        --footer-border=none
+        --bind="$tick:bg-transform-border-label:sh \"\$TV_APP_DIR/tui-clock.sh\" $page${TV_DEV_MODE:+ dev}"
+        --bind='start,every(2):bg-transform:node "$TV_APP_DIR/stream-status.mjs" --tui'
+    )
+    if [[ -n "$NO_COLOR" ]]; then
+        style+=(--color=bw)
+    else
+        style+=(--color="$_tv_fzf_colors")
+    fi
+    SHELL=/bin/sh FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf "${style[@]}" "$@"
+}
+
+# The bottom row: [Label] key, in fixed Teletekst order and colours; keys only from 60 columns.
+# Usage: _tv_buttons LABEL COLOUR KEY [LABEL COLOUR KEY …]
+_tv_buttons() {
+    local out='' columns=$(_tv_columns)
+    while (( $# >= 3 )); do
+        [[ -n "$out" ]] && out+='  '
+        if [[ -n "$NO_COLOR" ]]; then
+            out+="[$1]"
+            (( columns >= 60 )) && out+=" $3"
+        else
+            out+=$'\e[38;5;'"$2m[$1]"$'\e[0m'
+            (( columns >= 60 )) && out+=$'\e[38;5;30m'" $3"$'\e[0m'
+        fi
+        shift 3
+    done
+    print -r -- "$out"
+}
+
+_tv_columns() {
+    local size
+    size=$(stty size 2>/dev/null)
+    if [[ "$size" == <->' '<-> ]] && (( ${size#* } > 0 )); then
+        print -r -- "${size#* }"
+    else
+        print -r -- "${COLUMNS:-80}"
+    fi
+}
+
+# The number of leading 'header' rows a renderer printed (band, notice, column heads).
+_tv_header_rows() {
+    local line count=0
+    for line in "${(@f)1}"; do
+        [[ "$line" == header$'\t'* ]] || break
+        count=$(( count + 1 ))
+    done
+    print -r -- $count
 }
 
 # The menu owns the terminal like less or top: its own screen at full height, so
@@ -239,68 +310,174 @@ _tv_fullscreen() {
 }
 
 _tv_leave_screen() {
-    print -n $'\e[?1049l'
+    _tv_wait_end
+    print -n $'\e[0m\e[?1049l'
 }
 
+# Between two fzf runs the page stays black instead of the terminal's own colour.
 _tv_clear() {
-    print -n $'\e[H\e[2J'
+    _tv_wait_end
+    if [[ -n "$NO_COLOR" ]]; then
+        print -n $'\e[0m\e[H\e[2J'
+    else
+        print -n $'\e[0;48;5;16m\e[H\e[2J'
+    fi
 }
 
-# A short notice while the menu waits; the next draw replaces it.
-_tv_progress() {
+# Title band in zsh for the pages tv.zsh draws itself (wait, pairing). Usage: TITLE RIGHT WIDTH
+_tv_band() {
+    local title=" $1 " right="$2" width=$3 bg=21 fg=226 rfg=231
+    [[ -n "$TV_DEV_MODE" ]] && bg=201 fg=16 rfg=16
+    local gap=$(( width - ${#title} - ${#right} - ${#${right:+x}} ))
+    (( gap < 0 )) && gap=0
+    if [[ -n "$NO_COLOR" ]]; then
+        print -rn -- "$title$(printf '%*s' $gap '')$right"
+    else
+        print -rn -- $'\e[1;38;5;'"$fg;48;5;${bg}m$title"$'\e[0;38;5;'"$rfg;48;5;${bg}m$(printf '%*s' $gap '')$right${right:+ }"$'\e[0;48;5;16m'
+    fi
+}
+
+# Rows 1, 2 and 4 of a page tv.zsh draws itself, in the same place as in the menu.
+_tv_static_page() {
+    local page="$1" title="$2" channel="$3" columns=$(_tv_columns)
     _tv_clear
-    print -r -- $'\n\n    '"$1"
+    print -rn -- $'\e[1;3H'"$(FZF_COLUMNS=$columns TV_TUI_MOTION=${TV_TUI_MOTION:-1} sh "$TV_APP_DIR/tui-clock.sh" "$page" ${TV_DEV_MODE:+dev})"
+    # Nothing polls the stream here, so this row never looks live: it says what is busy.
+    print -rn -- $'\e[2;3H\e[38;5;226m▷ BEZIG'"${channel:+  }"$'\e[1;38;5;231m'"$channel"$'\e[0;48;5;16m'
+    print -rn -- $'\e[4;3H'"$(_tv_band "$title" '' $(( columns - 2 )))"
+}
+
+# A wait page while an action runs between two fzf runs. The message goes in row 5.
+# Usage: _tv_progress PAGE MESSAGE [CHANNEL]
+_tv_progress() {
+    local page="$1" message="$2" channel="$3"
+    _tv_static_page "$page" 'EVEN GEDULD' "$channel"
+    print -rn -- $'\e[5;3H\e[38;5;231m'"$message"$'\e[7;3H\e[38;5;30mCtrl-C breekt af.\e[0;48;5;16m\e[8;1H'
+    [[ "$TV_TUI_MOTION" == 0 || -n "$NO_COLOR" ]] && return
+    _tv_wait_motion "$(_tv_columns)" &
+    typeset -g _tv_wait_pid=$!
+}
+
+# The only animation outside fzf: a page counter that rolls like a Teletekst decoder
+# looking for its page, the clock, and the seconds in the band. It writes only to fixed
+# cells and stops when the menu shell is gone; _tv_clear and the exit trap end it first.
+_tv_wait_motion() {
+    local columns="$1" page=100 started=$SECONDS last=-1 header
+    trap 'exit 0' TERM HUP INT
+    while kill -0 $$ 2>/dev/null; do
+        if (( SECONDS - started != last )); then
+            last=$(( SECONDS - started ))
+            header=$(FZF_COLUMNS=$columns sh "$TV_APP_DIR/tui-clock.sh" "$page" ${TV_DEV_MODE:+dev})
+            print -rn -- $'\e7\e[1;3H'"$header"$'\e[4;3H'"$(_tv_band 'EVEN GEDULD' "$last s" $(( columns - 2 )))"$'\e8'
+        fi
+        print -rn -- $'\e7\e[1;3H\e[38;5;46mP'"$page"$'\e[0;48;5;16m\e8'
+        page=$(( page >= 899 ? 100 : page + 1 ))
+        sleep 0.1
+    done
+}
+
+_tv_wait_end() {
+    [[ -n "$_tv_wait_pid" ]] || return 0
+    kill -TERM "$_tv_wait_pid" 2>/dev/null
+    wait "$_tv_wait_pid" 2>/dev/null
+    typeset -g _tv_wait_pid=''
+}
+
+# Page 220: rows 1–4 like every page; 'tv pair' prints its lines and reads the PIN below.
+_tv_pair_page() {
+    _tv_static_page 220 'APPLE TV KOPPELEN'
+    print -rn -- $'\e[5;1H\e[38;5;231;48;5;16m'
+    tv pair
+}
+
+# Pages 201 and 202: one input row, with a live check of what the input becomes.
+# Usage: _tv_input other|add. Prints the query; fails when cancelled.
+_tv_input() {
+    local dialog="$1" page=201 confirm=Openen
+    [[ "$dialog" == add ]] && page=202 confirm=Toevoegen
+    local -x TV_TUI_DIALOG_HEAD
+    TV_TUI_DIALOG_HEAD=$(python3 "$TV_APP_DIR/tui.py" --dialog "$dialog" --color) || return 1
+    _tv_fzf $page --disabled --no-info --prompt='  Kanaal › ' --ghost='naam of twitch.tv/…' \
+        --header="$TV_TUI_DIALOG_HEAD" --footer="$(_tv_buttons Annuleren 196 Esc "$confirm" 46 Enter)" \
+        --bind='change:transform-header(sh "$TV_APP_DIR/tui-check.sh")' \
+        --bind='enter:accept-or-print-query,ctrl-j:accept-or-print-query,esc:abort' \
+        --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Annuleren]") echo abort;; "['"$confirm"']") echo accept-or-print-query;; esac' \
+        </dev/null
+}
+
+# Run an action and keep its output as the notice; the exit status sets its colour.
+_tv_notice() {
+    if TV_TUI_NOTICE=$("$@" 2>&1); then
+        TV_TUI_NOTICE_KIND=ok
+    else
+        TV_TUI_NOTICE_KIND=error
+    fi
 }
 
 _tv_menu_loop() {
+    setopt localoptions extendedglob
     local favfile="$TV_CONFIG_DIR/favorites"
     mkdir -p "$TV_CONFIG_DIR"
     touch "$favfile"
 
-    local items channel choice remove view_label input_title close_label
+    local items channel choice remove page header_rows footer jumps number target
     local -a logfiles
     local metadata_helper="$TV_APP_DIR/tui.py"
-    local -x TV_TUI_VIEW=live
-    local -x TV_TUI_COLUMNS=${COLUMNS:-100}
-    local -x TV_TUI_NOTICE=''
-    local -a refresh_args
-    local -a finder_style=(
-        --ansi --height=100% --layout=reverse
-        --border=rounded --margin=1 --padding=1,2
-        --pointer='▸' --prompt='Zoek › ' --info=inline-right
-        --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,hl:#c4b5fd,hl+:#e9d5ff,border:#7c3aed,label:#c4b5fd,header:#94a3b8,prompt:#c4b5fd,pointer:#a78bfa,info:#64748b,spinner:#a78bfa'
-    )
+    local -x TV_TUI_VIEW=live TV_TUI_COLUMNS TV_TUI_NOTICE='' TV_TUI_NOTICE_KIND='' TV_TUI_NOTICE_ROWS=''
+    local -x TV_TUI_RELOAD='' TV_TUI_STAND_FILE=''
+    local stand="${TV_CACHE_DIR:-$HOME/.cache/tv}/tui-stand"
+    # Cached render for the width fzf reports (resize) and for the stream poll when the
+    # channel that goes to the TV changes, so the ▶ in the list follows the stream row.
+    local render='python3 "$TV_APP_DIR/tui.py" --render-after-action --view "$TV_TUI_VIEW" --color --columns "$FZF_COLUMNS"'
 
     while true; do
         _tv_clear
-        TV_TUI_COLUMNS=${COLUMNS:-100}
-        items=$(python3 "$metadata_helper" --view "$TV_TUI_VIEW" --color "${refresh_args[@]}") || return 1
-        refresh_args=()
-        close_label=Terug
-        [[ "$TV_TUI_VIEW" == live ]] && close_label=Sluiten
+        TV_TUI_COLUMNS=$(_tv_columns)
+        TV_TUI_NOTICE_ROWS=''
+        items=$(python3 "$metadata_helper" --view "$TV_TUI_VIEW" --color) || return 1
+        # --header-lines is fixed for one fzf run; reloads render the same notice height.
+        header_rows=$(_tv_header_rows "$items")
+        TV_TUI_NOTICE_ROWS=$(( header_rows - 2 ))
+        TV_TUI_RELOAD="$render"
+        TV_TUI_STAND_FILE="$stand"
         case "$TV_TUI_VIEW" in
-            live) view_label=' LIVE NU · favorieten eerst ' ;;
-            offline) view_label=' OFFLINE ' ;;
-            unknown) view_label=' STATUS ONBEKEND ' ;;
-            manage) view_label=' BEHEER & APPLE TV ' ;;
+            live)
+                page=101
+                footer=$(_tv_buttons Sluiten 196 Esc Verversen 46 '^R' Favoriet 226 '^F' Beheer 51 200)
+                ;;
+            offline|unknown)
+                page=102
+                [[ "$TV_TUI_VIEW" == unknown ]] && page=103
+                footer=$(_tv_buttons Terug 196 Esc Verversen 46 '^R' Favoriet 226 '^F' Beheer 51 200)
+                ;;
+            manage)
+                page=200
+                TV_TUI_RELOAD='' TV_TUI_STAND_FILE=''
+                footer=$(_tv_buttons Terug 196 Esc Instellingen 51 300)
+                ;;
         esac
+        # Typing a page number opens that page at once; opening a view is harmless.
+        # Actions always need Enter.
+        jumps='case "$FZF_QUERY" in'
+        for number target in 101 view:live 102 view:offline 103 view:unknown 200 view:manage 300 action:settings; do
+            (( number == page )) || jumps+=" $number) echo \"become(echo $target)\";;"
+        done
+        jumps+=' esac'
 
-        choice=$(printf "%s\n" "$items" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-            "${finder_style[@]}" \
-            --border-label=" SOFASTREAM${TV_DEV_MODE:+ · DEV}  /  APPLE TV " \
-            --list-label="$view_label" --list-border=top \
-            --header-lines=4 --header-first \
-            --bind='start,every(2):bg-transform-border-label:node "$TV_APP_DIR/stream-status.mjs" --label' \
-            --footer="[Favoriet]  [Verversen]  [$close_label]"$'\nKlik/Enter openen · Rechtsklik/Ctrl-F ster · Esc wissen/terug' --footer-border=top \
+        choice=$(print -r -- "$items" | _tv_fzf $page \
+            --prompt='  Zoek › ' --ghost='kanaal, game of paginanummer' --info-command="$_tv_fzf_info" \
+            --header-lines="$header_rows" --footer="$footer" \
             --no-sort --track --id-nth=1 \
             --delimiter=$'\t' \
             --with-nth=2.. \
             --accept-nth=1 \
             --bind='enter:wait+accept-non-empty,ctrl-j:wait+accept-non-empty,left-click:accept-non-empty,right-click:trigger(ctrl-f),esc:cancel' \
-            --bind='zero:change-header(Geen resultaten · Esc wist je zoekopdracht),change:change-header(),load:change-header()' \
-            --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Favoriet]") echo "trigger(ctrl-f)";; "[Verversen]") echo "trigger(ctrl-r)";; "[Terug]"|"[Sluiten]") echo "abort";; esac' \
-            --bind='ctrl-r:change-header(Twitch-status verversen…)+reload(python3 "$TV_APP_DIR/tui.py" --view "$TV_TUI_VIEW" --color --force)' \
-            --bind='ctrl-f:reload(python3 "$TV_APP_DIR/tui.py" --toggle-key {1} --render-after-action --view "$TV_TUI_VIEW" --color)') || {
+            --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Favoriet]") echo "trigger(ctrl-f)";; "[Verversen]") echo "trigger(ctrl-r)";; "[Terug]"|"[Sluiten]") echo abort;; "[Beheer]") echo "become(echo view:manage)";; "[Instellingen]") echo "become(echo action:settings)";; esac' \
+            --bind="change:transform:$jumps" \
+            --bind='ctrl-r:change-prompt(  Ververst… › )+reload(python3 "$TV_APP_DIR/tui.py" --view "$TV_TUI_VIEW" --color --force --columns "$FZF_COLUMNS")' \
+            --bind='ctrl-f:reload(python3 "$TV_APP_DIR/tui.py" --toggle-key {1} --render-after-action --view "$TV_TUI_VIEW" --color --columns "$FZF_COLUMNS")' \
+            --bind="resize:reload($render)" \
+            --bind='load:change-prompt(  Zoek › )') || {
                 if [[ "$TV_TUI_VIEW" != live ]]; then
                     TV_TUI_VIEW=live
                     continue
@@ -316,70 +493,70 @@ _tv_menu_loop() {
                 ;;
 
             action:other|action:add)
-                input_title=' ANDERE STREAMER OPENEN '
-                [[ "$choice" == action:add ]] && input_title=' FAVORIET TOEVOEGEN '
-                channel=$(FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-                    "${finder_style[@]}" --height=12 --min-height=10 --disabled --no-info \
-                    --border-label="$input_title" --prompt='Kanaal › ' \
-                    --header=$'Typ een Twitch-kanaalnaam of plak een Twitch-link.\nEnter bevestigen · Esc/Ctrl-C annuleren' \
-                    --bind='enter:accept-or-print-query,ctrl-j:accept-or-print-query,esc:abort' </dev/null) || {
-                        TV_TUI_NOTICE='Invoer geannuleerd.'
-                        continue
-                    }
+                _tv_clear
+                channel=$(_tv_input "${choice#action:}") || {
+                    TV_TUI_NOTICE='Invoer geannuleerd.' TV_TUI_NOTICE_KIND=info
+                    continue
+                }
                 if [[ -z "${channel//[[:space:]]/}" ]]; then
-                    TV_TUI_NOTICE='Invoer geannuleerd.'
+                    TV_TUI_NOTICE='Invoer geannuleerd.' TV_TUI_NOTICE_KIND=info
                 elif [[ "$choice" == action:add ]]; then
-                    TV_TUI_NOTICE=$(python3 "$metadata_helper" --add "$channel" 2>&1) || :
+                    _tv_notice python3 "$metadata_helper" --add "$channel"
                 else
-                    _tv_progress 'Kanaal controleren en openen op Apple TV…'
-                    TV_TUI_NOTICE=$(_tv_start "$channel" 2>&1) || :
+                    _tv_progress $page 'Kanaal controleren en openen op Apple TV…'
+                    _tv_notice _tv_start "$channel"
                 fi
                 ;;
 
             action:remove)
                 if [[ ! -s "$favfile" ]]; then
-                    TV_TUI_NOTICE='Er zijn geen kanalen om te verwijderen.'
+                    TV_TUI_NOTICE='Er zijn geen kanalen om te verwijderen.' TV_TUI_NOTICE_KIND=info
                     continue
                 fi
-                remove=$(FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-                    "${finder_style[@]}" \
-                    --border-label=' KANAAL VERWIJDEREN ' \
-                    --prompt='Verwijder › ' \
-                    --header='Klik / Enter verwijderen · Esc terug' \
-                    --bind='enter:wait+accept-non-empty,ctrl-j:wait+accept-non-empty,left-click:accept-non-empty,esc:cancel' < "$favfile") || continue
+                _tv_clear
+                items=$(python3 "$metadata_helper" --view remove --color) || return 1
+                # Page 203 is the one page where Enter removes something: its band is red.
+                remove=$(TV_TUI_RELOAD='' TV_TUI_STAND_FILE='' && print -r -- "$items" | _tv_fzf 203 \
+                    --prompt='  Verwijder › ' --ghost='typ om te zoeken' --info-command="$_tv_fzf_info" \
+                    --header-lines="$(_tv_header_rows "$items")" --footer="$(_tv_buttons Terug 196 Esc)" \
+                    --no-sort --delimiter=$'\t' --with-nth=2.. --accept-nth=1 \
+                    --bind='enter:wait+accept-non-empty,ctrl-j:wait+accept-non-empty,left-click:accept-non-empty,esc:cancel' \
+                    --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Terug]") echo abort;; esac') || continue
 
                 if [[ -n "$remove" ]]; then
-                    TV_TUI_NOTICE=$(python3 "$metadata_helper" --remove "$remove" 2>&1) || :
+                    _tv_notice python3 "$metadata_helper" --remove "$remove"
                 fi
                 ;;
 
             action:import)
-                _tv_progress 'GUI-follows importeren…'
-                TV_TUI_NOTICE=$(tv fav import 2>&1) || :
+                _tv_progress 204 'GUI-follows importeren…'
+                _tv_notice tv fav import
                 ;;
 
             action:status)
-                _tv_progress 'Stream- en tv-status ophalen…'
-                TV_TUI_NOTICE=$(tv status 2>&1) || :
-                TV_TUI_NOTICE="Op $(date +%H:%M:%S) · $TV_TUI_NOTICE"
+                _tv_progress 210 'Stream- en tv-status ophalen…'
+                TV_TUI_NOTICE=$(tv status 2>&1)
+                # A dated snapshot; the PID stays on the command line ('tv status').
+                TV_TUI_NOTICE="Op $(date +%H:%M:%S) · ${TV_TUI_NOTICE// · PID [0-9]##/}"
+                TV_TUI_NOTICE_KIND=info
                 ;;
 
             action:pair)
-                if tv pair; then
-                    TV_TUI_NOTICE='Apple TV gekoppeld voor automatisch wakker maken en VLC openen.'
+                if _tv_pair_page; then
+                    TV_TUI_NOTICE='Apple TV gekoppeld voor automatisch wakker maken en VLC openen.' TV_TUI_NOTICE_KIND=ok
                 else
-                    TV_TUI_NOTICE='Koppelen niet afgerond. Je kunt dit later opnieuw kiezen.'
+                    TV_TUI_NOTICE='Koppelen niet afgerond. Je kunt dit later opnieuw kiezen.' TV_TUI_NOTICE_KIND=error
                 fi
                 ;;
 
             action:settings)
                 _tv_settings
-                TV_TUI_NOTICE='Instellingen gesloten. Je selectie geldt bij de volgende kanaalkeuze.'
+                TV_TUI_NOTICE='Instellingen gesloten. Je selectie geldt bij de volgende kanaalkeuze.' TV_TUI_NOTICE_KIND=info
                 ;;
 
             action:stop)
-                _tv_progress 'Tv-stream stoppen…'
-                TV_TUI_NOTICE=$(tv stop 2>&1) || :
+                _tv_progress 211 'Tv-stream stoppen…'
+                _tv_notice tv stop
                 ;;
 
             action:log)
@@ -387,29 +564,31 @@ _tv_menu_loop() {
                 [[ -f $TV_STREAM_LOG ]] && logfiles+=("$TV_STREAM_LOG")
                 [[ -s $TV_STREAM_ERR ]] && logfiles+=("$TV_STREAM_ERR")
                 if (( ${#logfiles} )); then
-                    # -X: stay on the menu's screen; less would otherwise leave it on exit.
+                    # The log keeps the terminal's own colours. -X: stay on the menu's
+                    # screen; less would otherwise leave it on exit.
+                    print -n $'\e[0m\e[H\e[2J'
                     less -X -P 'q: terug  •  F: live volgen  •  :n: volgend log' +G "${logfiles[@]}"
                 else
-                    TV_TUI_NOTICE='Nog geen Streamlink-log.'
+                    TV_TUI_NOTICE='Nog geen Streamlink-log.' TV_TUI_NOTICE_KIND=info
                 fi
                 ;;
 
             channel:*)
                 channel="${choice#channel:}"
                 if [[ "$TV_TUI_VIEW" == offline ]]; then
-                    TV_TUI_NOTICE="$channel is offline. Kies een live kanaal."
+                    TV_TUI_NOTICE="$channel is offline. Kies een live kanaal." TV_TUI_NOTICE_KIND=error
                 else
-                    _tv_progress 'Kanaal controleren en openen op Apple TV…'
-                    TV_TUI_NOTICE=$(_tv_start "$channel" 2>&1) || :
+                    _tv_progress $page 'Kanaal controleren en openen op Apple TV…' "$channel"
+                    _tv_notice _tv_start "$channel"
                 fi
                 ;;
 
             noop)
-                TV_TUI_NOTICE='Geen kanaal geselecteerd. Kies een overzicht of Beheer & Apple TV.'
+                TV_TUI_NOTICE='Geen kanaal geselecteerd. Kies een overzicht of Beheer & Apple TV.' TV_TUI_NOTICE_KIND=info
                 ;;
 
             *)
-                TV_TUI_NOTICE="Actie niet herkend: $choice"
+                TV_TUI_NOTICE="Actie niet herkend: $choice" TV_TUI_NOTICE_KIND=error
                 ;;
         esac
     done
@@ -420,28 +599,41 @@ _tv_settings() {
 }
 
 _tv_settings_loop() {
-    local rows choice notice=''
+    local rows choice
+    local -x TV_TUI_NOTICE='' TV_TUI_NOTICE_KIND='' TV_TUI_NOTICE_ROWS='' TV_TUI_RELOAD='' TV_TUI_STAND_FILE=''
+    local -x TV_TUI_COLUMNS
     while true; do
         _tv_clear
-        rows=$(python3 "$TV_APP_DIR/settings.py" menu) || return 1
-        choice=$(print -r -- "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-            --height=100% --layout=reverse --border=rounded --margin=1 --padding=1,2 \
-            --border-label=" SOFASTREAM${TV_DEV_MODE:+ @DEV} · INSTELLINGEN " \
-            --header-lines=2 --header-first --header="$notice" --prompt='Kies › ' \
-            --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,border:#7c3aed,prompt:#c4b5fd,pointer:#a78bfa' \
-            --pointer='▸' --no-sort --delimiter=$'\t' --with-nth=2.. --accept-nth=1 \
-            --bind='enter:accept-non-empty,ctrl-j:accept-non-empty,left-click:accept-non-empty,esc:abort') || return 0
+        TV_TUI_COLUMNS=$(_tv_columns)
+        TV_TUI_NOTICE_ROWS=''
+        rows=$(python3 "$TV_APP_DIR/settings.py" menu --color "$TV_TUI_COLUMNS") || return 1
+        TV_TUI_NOTICE_ROWS=$(( $(_tv_header_rows "$rows") - 2 ))
+        choice=$(print -r -- "$rows" | _tv_fzf 300 \
+            --prompt='  Kies › ' --ghost='typ om te zoeken' --info-command="$_tv_fzf_info" \
+            --header-lines="$(_tv_header_rows "$rows")" --footer="$(_tv_buttons Terug 196 Esc)" \
+            --no-sort --delimiter=$'\t' --with-nth=2.. --accept-nth=1 \
+            --bind='enter:accept-non-empty,ctrl-j:accept-non-empty,left-click:accept-non-empty,esc:abort' \
+            --bind='click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in "[Terug]") echo abort;; esac' \
+            --bind='resize:reload(python3 "$TV_APP_DIR/settings.py" menu --color "$FZF_COLUMNS")') || return 0
+        TV_TUI_NOTICE_KIND=''
         case "$choice" in
-            device:*) notice=$(python3 "$TV_APP_DIR/settings.py" select "${choice#device:}" 2>&1) || : ;;
+            device:*) _tv_notice python3 "$TV_APP_DIR/settings.py" select "${choice#device:}" ;;
             scan)
-                _tv_progress 'Apple TVs zoeken op het lokale netwerk…'
-                notice=$(python3 "$TV_APP_DIR/settings.py" scan 2>&1) || :
+                _tv_progress 300 'Apple TVs zoeken op het lokale netwerk…'
+                _tv_notice python3 "$TV_APP_DIR/settings.py" scan
                 ;;
             pair)
-                if tv pair; then notice='Apple TV gekoppeld.'; else notice='Koppelen niet afgerond.'; fi
+                if _tv_pair_page; then
+                    TV_TUI_NOTICE='Apple TV gekoppeld.' TV_TUI_NOTICE_KIND=ok
+                else
+                    TV_TUI_NOTICE='Koppelen niet afgerond.' TV_TUI_NOTICE_KIND=error
+                fi
                 ;;
-            auto|hq|dev-copy) notice=$(python3 "$TV_APP_DIR/settings.py" "$choice" 2>&1) || : ;;
-            dev-info) notice=$(python3 "$TV_APP_DIR/settings.py" dev-info 2>&1) || : ;;
+            auto|hq|dev-copy) _tv_notice python3 "$TV_APP_DIR/settings.py" "$choice" ;;
+            dev-info)
+                _tv_notice python3 "$TV_APP_DIR/settings.py" dev-info
+                [[ "$TV_TUI_NOTICE_KIND" == ok ]] && TV_TUI_NOTICE_KIND=info
+                ;;
         esac
     done
 }
@@ -477,7 +669,7 @@ tv() {
             local command_name=tv
             [[ "$TV_DEV_MODE" == 1 ]] && command_name=sofastream@dev
             cat <<EOF
-📺 SofaStream — Twitch → Apple TV
+SofaStream — Twitch → Apple TV
 
 Gebruik:
   $command_name                    Open interactieve TUI
@@ -497,10 +689,12 @@ Gebruik:
 
   $command_name --help             Toon deze help
 
-In het menu:
+In het menu (een teletekstpagina):
   Live kanalen: sterren eerst, daarna op kijkeraantal (hoog naar laag).
   Offline kanalen staan in een apart overzicht.
   Klik of Enter opent een kanaal of menu; de knoppen onderaan zijn klikbaar.
+  Typ 101 (live), 102 (offline), 103 (onbekend), 200 (beheer) of 300 (instellingen)
+  om die pagina direct te openen.
   Ctrl-F zet een ster aan/uit op het geselecteerde kanaal.
   Rechtsklik op een kanaal zet de ster ook aan/uit.
   Ctrl-R ververst; Esc wist eerst de zoekopdracht en gaat daarna terug.
