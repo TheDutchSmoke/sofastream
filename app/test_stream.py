@@ -1,8 +1,10 @@
 """stream.zsh fixtures: fake streamlink, Keychain and Twitch validation. No network, no Apple TV."""
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 TOKEN = 'abcdefghijklmnopqrstuvwxyz0123'
@@ -45,18 +47,20 @@ class StreamLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.splitlines()
 
-    def test_without_2k_streamlink_gets_original_arguments_only(self):
-        self.assertEqual(self.run_stream('0'), ['--twitch-low-latency', 'https://www.twitch.tv/x', 'best'])
+    def test_without_2k_streamlink_is_held_to_h264(self):
+        # The user's own config.twitch may enable H.265/AV1; with 2K off the command line overrides it.
+        self.assertEqual(self.run_stream('0'), ['--loglevel', 'info', '--twitch-supported-codecs', 'h264',
+                                                '--twitch-low-latency', 'https://www.twitch.tv/x', 'best'])
 
     def test_2k_adds_codecs_and_login_via_private_config_only(self):
         lines = self.run_stream('1')
         args = [line for line in lines if not line.startswith('CFG ')]
-        self.assertEqual(args[:2], ['--twitch-supported-codecs', 'h264,h265,av1'])
+        # --loglevel info overrides a 'loglevel=debug' config, which would log the login header.
+        self.assertEqual(args[:4], ['--loglevel', 'info', '--twitch-supported-codecs', 'h264,h265,av1'])
         self.assertEqual(args[-3:], ['--twitch-low-latency', 'https://www.twitch.tv/x', 'best'])
         # The token is never a process argument, only inside a 0600 config file.
         self.assertFalse(any(TOKEN in a for a in args))
         self.assertIn(f'CFG 600 twitch-api-header=Authorization=OAuth {TOKEN}', lines)
-        import time
         for _ in range(50):
             if not any(self.private.iterdir()):
                 break
@@ -72,6 +76,72 @@ class StreamLauncherTests(unittest.TestCase):
         self.run_stream('1')
         self.assertFalse(stale.exists())
         self.assertTrue(fresh.exists())
+
+    def leftovers(self):
+        return sorted(path.name for path in self.private.iterdir() if path.name.startswith('sofastream-login.'))
+
+    def start_waiting_session(self):
+        """stream.zsh with 2K and a Streamlink that keeps waiting for a viewer, like the real server."""
+        self.env['TV_LOGIN_CONFIG_TTL'] = '15'
+        pidfile = self.root/'streamlink.pid'
+        waiting = self.executable('streamlink-wait', f'print $$ > {pidfile}; exec /bin/sleep 30')
+        process = subprocess.Popen(['/bin/zsh', '-f', str(SCRIPT), str(waiting), '1', 'svc', 'https://www.twitch.tv/x', 'best'],
+                                   env=self.env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        until = time.monotonic() + 5
+        while time.monotonic() < until and not (self.leftovers() and pidfile.exists() and pidfile.read_text().strip()):
+            time.sleep(0.05)
+        self.assertEqual(len(self.leftovers()), 1)
+        return process, int(pidfile.read_text())
+
+    def assert_gone(self, pid):
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_stopping_the_job_within_the_ttl_removes_the_login(self):
+        # launchd stops a job (tv stop, a new channel) with SIGTERM, to the script or its whole group.
+        for whole_group in (False, True):
+            with self.subTest(whole_group=whole_group):
+                process, streamlink = self.start_waiting_session()
+                if whole_group:
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.send_signal(signal.SIGTERM)
+                process.wait(timeout=3)
+                self.assertEqual(self.leftovers(), [], 'the Twitch login stays on disk after the job stopped')
+                self.assert_gone(streamlink)
+
+    def test_login_is_removed_as_soon_as_streamlink_ends(self):
+        self.env['TV_LOGIN_CONFIG_TTL'] = '15'
+        began = time.monotonic()
+        lines = self.run_stream('1')
+        self.assertIn(f'CFG 600 twitch-api-header=Authorization=OAuth {TOKEN}', lines)
+        self.assertLess(time.monotonic() - began, 3, 'the job must end with Streamlink, not after the TTL')
+        self.assertEqual(self.leftovers(), [])
+
+    def test_streamlink_exit_status_is_kept_with_a_login(self):
+        failing = self.executable('streamlink-fail', 'exit 3')
+        result = subprocess.run(['/bin/zsh', '-f', str(SCRIPT), str(failing), '1', 'svc', 'https://www.twitch.tv/x', 'best'],
+                                env=self.env, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_hard_kill_leftover_is_swept_on_any_next_start(self):
+        process, _ = self.start_waiting_session()
+        os.killpg(process.pid, signal.SIGKILL)  # no trap can run; only the next start can clean up
+        process.wait(timeout=3)
+        for path in self.private.iterdir():
+            os.utime(path, (0, 0))
+        self.run_stream('0')  # 2K turned off meanwhile
+        self.assertEqual(self.leftovers(), [])
+        process, _ = self.start_waiting_session()
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=3)
+        for path in self.private.iterdir():
+            os.utime(path, (0, 0))
+        self.env['TV_CURL_BIN'] = str(self.curl('401'))  # or the login expired meanwhile
+        self.run_stream('1')
+        self.assertEqual(self.leftovers(), [])
 
     def test_existing_default_streamlink_config_is_kept(self):
         default = self.root/'.config/streamlink'

@@ -92,6 +92,30 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(rows[2], "header\t" + notice.splitlines()[1])
         self.assertEqual(sum(row.startswith("header\t") for row in rows), 4)
 
+    def test_playable_check_names_streamlink_failures(self):
+        """Streamlink 8.6.3 prints its fatal error as one 'error: …' line on stdout, also with --loglevel none."""
+        cases = [
+            ('print -r -- "https://video.example/playlist.m3u8"', 0, None),
+            ('print -r -- "error: No playable streams found on this URL: https://www.twitch.tv/star"', 1, "star is offline"),
+            ('print -r -- \'error: Unauthorized: The "Authorization" token is invalid.\'', 1, "login uit je Streamlink-config"),
+            ('print -r -- "error: unrecognized arguments: --twitch-low-latency"', 2, "Streamlink: unrecognized arguments"),
+            ('print -r -- "error: Unable to open URL: https://gql.twitch.tv (Connection refused)" >&2', 1, "Streamlink: Unable to open URL"),
+            ('exit 1', 1, "star is offline"),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            fake = Path(folder) / "streamlink"
+            for body, code, expected in cases:
+                fake.write_text(f"#!/bin/zsh -f\n{body}\nexit {code}\n")
+                fake.chmod(0o755)
+                with self.subTest(body=body), patch.dict("os.environ", {"PATH": f"{folder}:/usr/bin:/bin"}):
+                    if expected is None:
+                        tv.check_playable("star")
+                        continue
+                    with self.assertRaises(ValueError) as caught:
+                        tv.check_playable("star")
+                    self.assertIn(expected, str(caught.exception))
+                    self.assertIn("Je huidige stream blijft ongewijzigd.", str(caught.exception))
+
     def test_channel_names_and_links_share_the_same_validation(self):
         for value in [" Alpha ", "@Alpha", "https://twitch.tv/Alpha?ref=share", "https://www.twitch.tv/Alpha/", "twitch.tv/Alpha", "HTTPS://TWITCH.TV/Alpha"]:
             self.assertEqual(tv.normalize_channel(value), "alpha")

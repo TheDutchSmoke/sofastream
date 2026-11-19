@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +20,9 @@ let malformed = false;
 let ignoreStop = false;
 // Real VLC on tvOS never answers a WebSocket close frame.
 let ignoreClose = false;
+// How VLC treats the stream after openURL: 'keep' plays, 'drop' disconnects at
+// once, 'never' does not connect. Each session has its own Streamlink log.
+let viewer = 'keep';
 const preparations = [];
 const requests = [];
 const server = createServer((req, res) => {
@@ -66,7 +70,12 @@ server.on('upgrade', (req, socket) => {
       const command = JSON.parse(content.toString());
       commands.push(command);
       if (command.type === 'ended' && !ignoreStop) current = null;
-      if (command.type === 'openURL') current = command.url;
+      if (command.type === 'openURL') {
+        current = command.url;
+        writeFileSync(logPath, '[cli][info] Starting server\n'
+          + (viewer === 'never' ? '' : '[cli][info] Got HTTP request from VLC/3.0.24 LibVLC/3.0.24\n')
+          + (viewer === 'drop' ? '[cli][info] HTTP connection closed\n[cli][info] Stream ended\n' : ''));
+      }
     }
   });
   socket.on('error', () => {});
@@ -94,7 +103,7 @@ await writeFile(configPath, JSON.stringify(testConfig));
 await writeFile(logPath, '[cli][info] Starting server\n');
 const invoke = (command, extraEnv = {}) => run(process.execPath, [fileURLToPath(new URL('./playback.mjs', import.meta.url)), command, 'star'], {
   env: { ...process.env, TV_APPLE_TV_CONFIG: configPath, TV_ACTIVE_TV_CONFIG: '', TV_STREAM_LOG: logPath,
-    TV_REMOTE_PYTHON: helper, ...extraEnv }, timeout: 10000,
+    TV_REMOTE_PYTHON: helper, TV_STREAM_HOLD_MS: '200', TV_STREAM_CONNECT_MS: '600', ...extraEnv }, timeout: 10000,
 });
 try {
   const running = parseStreamStatus('state = running\npid = 123\nhttps://www.twitch.tv/star\nlast exit code = 1\n');
@@ -127,7 +136,10 @@ try {
   await writeFile(configPath, JSON.stringify(testConfig));
   current = 'http://example.invalid/old';
   assert.match((await invoke('play')).stdout, /Afspelen gestart: star in VLC op Test TV/);
-  assert.deepEqual(commands, [{ type: 'ended' }, { type: 'openURL', url: 'http://127.0.0.1:8765/' }]);
+  assert.equal(commands.length, 2);
+  assert.deepEqual(commands[0], { type: 'ended' });
+  assert.equal(commands[1].type, 'openURL');
+  assert.match(commands[1].url, /^http:\/\/127\.0\.0\.1:8765\/star-[0-9a-z]+$/);
   const activeStatus = (await invoke('status')).stdout;
   assert.match(activeStatus, /^Streamlink:/);
   assert.match(activeStatus, /Apple TV: speelt .* in VLC/);
@@ -157,10 +169,61 @@ try {
   current = 'http://127.0.0.1:8765/';
   await assert.rejects(invoke('stop'), error => /bevestigt het stoppen nog niet/.test(error.stderr));
   ignoreStop = false;
-  await writeFile(logPath, '[cli][error] No playable streams found\n');
+
+  // Before the port reopens, VLC must let go of our previous stream, and only that.
+  commands.length = 0;
+  current = 'http://127.0.0.1:8765/old-1';
+  assert.equal((await invoke('release')).stdout, '');
+  assert.deepEqual(commands, [{ type: 'ended' }]);
+  assert.equal(current, null);
+  current = 'http://example.invalid/unrelated';
+  await invoke('release');
+  assert.equal(current, 'http://example.invalid/unrelated', 'Release leaves unrelated media alone');
+  assert.equal(commands.length, 1);
+  current = 'http://127.0.0.1:8765/old-2';
+  ignoreStop = true;
+  await assert.rejects(invoke('release'), error => error.code === 1 && /stopt de vorige stream niet/.test(error.stderr));
+  ignoreStop = false;
+  available = false;
+  const asleep = await invoke('release');
+  assert.equal(asleep.stdout + asleep.stderr, '', 'A sleeping TV or closed VLC holds no stream');
+  available = true;
+  console.log('PASS: release stops only our previous stream');
+
+  // A fresh URL per session; with nothing playing, no stop command precedes it.
+  current = null;
+  commands.length = 0;
+  await invoke('play');
+  current = null;
+  await invoke('play');
+  assert.deepEqual(commands.map(command => command.type), ['openURL', 'openURL']);
+  assert.notEqual(commands[0].url, commands[1].url);
+  console.log('PASS: fresh URL per session, no stop when VLC is idle');
+
+  // VLC confirms the URL but drops (exit 3) or never opens the stream: report it.
+  current = null;
+  viewer = 'drop';
+  await assert.rejects(invoke('play'), error => error.code === 3 && /verbrak de stream direct/.test(error.stderr));
+  current = null;
+  viewer = 'never';
+  await assert.rejects(invoke('play'), error => error.code === 1 && /haalt de stream niet op/.test(error.stderr));
+  viewer = 'keep';
+  current = null;
+  assert.match((await invoke('play')).stdout, /Afspelen gestart/);
+  console.log('PASS: a dropped or unopened stream is not reported as playing');
+  // Real Streamlink 8.6.3 output: a plain 'error:' line, not a '[cli][error]' log line.
+  await writeFile(logPath, '[cli][info] Found matching plugin twitch for URL https://www.twitch.tv/star\nerror: No playable streams found on this URL: https://www.twitch.tv/star\n');
   const beforeFailure = commands.length;
-  await assert.rejects(invoke('play'), error => /No playable streams/.test(error.stderr));
+  await assert.rejects(invoke('play'), error => /^Streamlink: No playable streams/.test(error.stderr));
   assert.equal(commands.length, beforeFailure);
+  await writeFile(logPath, '[cli][info] Available streams: 720p60, 1080p60 (best)\nerror: Failed to create HTTP server: [Errno 48] Address already in use\n');
+  let failedAt = Date.now();
+  await assert.rejects(invoke('play'), error => /Address already in use/.test(error.stderr) && /Poort 8765 is nog bezet/.test(error.stderr));
+  assert.ok(Date.now() - failedAt < 2000, `a Streamlink error took ${Date.now() - failedAt} ms to surface`);
+  assert.equal(commands.length, beforeFailure);
+  await writeFile(logPath, '[cli][error] Try 1/1: Could not open stream\n');
+  await assert.rejects(invoke('play'), error => /^Streamlink: Try 1\/1/.test(error.stderr));
+  console.log('PASS: Streamlink errors surface at once');
   available = false;
   await assert.rejects(invoke('check'), error => /Afspelen op afstand/.test(error.stderr));
   const unavailableStatus = (await invoke('status')).stdout;
