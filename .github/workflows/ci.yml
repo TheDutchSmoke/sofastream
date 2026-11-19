@@ -45,6 +45,7 @@ jobs:
           python3 app/test_commands.py
           python3 app/test_settings.py
           python3 app/test_stream.py
+          python3 app/test_relay.py
           python3 app/test_remote.py
           node --test app/gui-importer/import.test.mjs
           node app/test_playback.mjs

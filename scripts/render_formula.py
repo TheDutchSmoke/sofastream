@@ -15,6 +15,7 @@ def formula(channel, version, url, checksum):
   license "MIT"
 
   depends_on :macos
+  depends_on "ffmpeg"
   depends_on "fzf"
   depends_on "node"
   depends_on "python@3.14"

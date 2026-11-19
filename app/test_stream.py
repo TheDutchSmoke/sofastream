@@ -45,7 +45,9 @@ class StreamLauncherTests(unittest.TestCase):
                                  '--twitch-low-latency', 'https://www.twitch.tv/x', 'best'],
                                 env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout.splitlines()
+        self.video = result.stdout.splitlines()
+        # stdout is the video pipe to the relay; SofaStream's own notices go to stderr.
+        return self.video + result.stderr.splitlines()
 
     def test_without_2k_streamlink_is_held_to_h264(self):
         # The user's own config.twitch may enable H.265/AV1; with 2K off the command line overrides it.
@@ -177,6 +179,12 @@ class StreamLauncherTests(unittest.TestCase):
         lines = self.run_stream('1')
         self.assertTrue(any('verlopen; 2K gebruikt nu de login uit je Streamlink-config' in line for line in lines), lines)
         self.assertFalse(any(TOKEN in line for line in lines))
+
+    def test_notices_never_reach_the_video_pipe(self):
+        self.env['TV_SECURITY_BIN'] = str(self.security(''))
+        lines = self.run_stream('1')
+        self.assertTrue(any('geen Twitch-login' in line for line in lines))
+        self.assertFalse(any('[sofastream]' in line for line in self.video), self.video)
 
     def test_expired_login_is_not_sent(self):
         self.env['TV_CURL_BIN'] = str(self.curl('401'))
