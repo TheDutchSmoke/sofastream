@@ -113,30 +113,36 @@ def write_cache(path, data):
 
 
 def fetch_status(channels):
-    fields = " ".join(
-        f"c{i}: user(login: {json.dumps(login)}) "
-        "{ stream { type viewersCount game { name } } }"
-        for i, login in enumerate(channels)
-    )
+    # One root field for the whole batch: Twitch rejects queries with more than
+    # 15 aliased root fields, which made every channel "unknown".
+    query = ("query($logins: [String!]) { users(logins: $logins) "
+             "{ login stream { type viewersCount game { name } } } }")
     result = subprocess.run(
         ["curl", "--silent", "--show-error", "--fail", "--connect-timeout", "2",
          "--max-time", "6", ENDPOINT, "-H", f"Client-ID: {CLIENT_ID}",
          "-H", "Content-Type: application/json", "--data-binary", "@-"],
-        input=json.dumps({"query": "query { " + fields + " }"}),
+        input=json.dumps({"query": query, "variables": {"logins": list(channels)}}),
         text=True, capture_output=True, timeout=7, check=True,
     )
     payload = json.loads(result.stdout)
     if not isinstance(payload, dict) or payload.get("errors"):
         raise ValueError("Twitch query failed")
     data = payload.get("data")
-    if not isinstance(data, dict):
+    users = data.get("users") if isinstance(data, dict) else None
+    if not isinstance(users, list):
         raise ValueError("Twitch response has no data")
+    found = {user["login"].lower(): user for user in users
+             if isinstance(user, dict) and isinstance(user.get("login"), str)}
+    # Unknown logins come back as null in their own position.
+    aligned = len(users) == len(channels)
     statuses = {}
     for i, login in enumerate(channels):
-        key = f"c{i}"
-        if key not in data:
+        if login in found:
+            user = found[login]
+        elif aligned and users[i] is None:
+            user = None
+        else:
             continue
-        user = data[key]
         if user is None:
             statuses[login] = {"status": "missing"}
         elif isinstance(user, dict) and "stream" in user:
