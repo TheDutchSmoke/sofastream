@@ -39,6 +39,10 @@ if [[ "$hq" == 1 ]]; then
         ( /bin/sleep "${TV_LOGIN_CONFIG_TTL:-15}"; /bin/rm -f -- "$cfg" ) &!
     fi
     unset token
+else
+    # The user's own Streamlink config may enable H.265/AV1 for other tools; with
+    # 2K off the setting must hold. Command-line options override config files.
+    extra+=(--twitch-supported-codecs h264)
 fi
 
 exec "$streamlink" "${extra[@]}" "$@"

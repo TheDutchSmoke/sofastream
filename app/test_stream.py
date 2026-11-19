@@ -45,8 +45,10 @@ class StreamLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.splitlines()
 
-    def test_without_2k_streamlink_gets_original_arguments_only(self):
-        self.assertEqual(self.run_stream('0'), ['--twitch-low-latency', 'https://www.twitch.tv/x', 'best'])
+    def test_without_2k_streamlink_is_held_to_h264(self):
+        # The user's own config.twitch may enable H.265/AV1; with 2K off the command line overrides it.
+        self.assertEqual(self.run_stream('0'), ['--twitch-supported-codecs', 'h264',
+                                                '--twitch-low-latency', 'https://www.twitch.tv/x', 'best'])
 
     def test_2k_adds_codecs_and_login_via_private_config_only(self):
         lines = self.run_stream('1')
