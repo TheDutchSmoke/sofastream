@@ -38,7 +38,19 @@ def section(table_id, extension, body):
 
 PAT = packet(0, b"\x00" + section(0x00, 1, bytes([0x00, 0x01, 0xF0, 0x00])), start=True)
 PMT = packet(0x1000, b"\x00" + section(0x02, 1, bytes([0xE1, 0x00, 0xF0, 0x00, 0x24, 0xE1, 0x00, 0xF0, 0x00])), start=True)
-KEYFRAME = packet(0x100, b"\x00\x00\x01\xe0key", start=True, adaptation=bytes([0x40]))
+def pcr_bytes(base):
+    return bytes([(base >> 25) & 0xFF, (base >> 17) & 0xFF, (base >> 9) & 0xFF, (base >> 1) & 0xFF,
+                  ((base & 1) << 7) | 0x7E, 0x00])
+
+
+def pes_with_pts(pts):
+    stamp = bytes([0x21 | ((pts >> 29) & 0x0E), (pts >> 22) & 0xFF, ((pts >> 14) & 0xFE) | 1,
+                   (pts >> 7) & 0xFF, ((pts << 1) & 0xFE) | 1])
+    return b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05" + stamp + b"key"
+
+
+CLOCK = 900_000  # 10 s: every fake source starts its clock here, like each new ffmpeg
+KEYFRAME = packet(0x100, pes_with_pts(CLOCK + 63_000), start=True, adaptation=bytes([0x50]) + pcr_bytes(CLOCK))
 AUDIO_KEY = packet(0x101, b"\x00\x00\x01\xc0aud", start=True, adaptation=bytes([0x40]))
 FILLER = packet(0x100, b"frame")
 
@@ -62,6 +74,33 @@ def table_version(data, pid):
             valid = relay.mpeg_crc32(p[sec:end - 4]) == int.from_bytes(p[end - 4:end], "big")
             return (p[sec + 5] >> 1) & 0x1F, valid
     return None, False
+
+
+def clocks(data):
+    """(PCR, PTS) of every keyframe packet in a byte stream that may start mid-packet."""
+    found, at = [], data.find(b"\x47\x41\x00")
+    while at != -1 and at + PACKET <= len(data):
+        p = data[at:at + PACKET]
+        pcr, timestamps = relay.clock_fields(p)
+        if pcr is not None and timestamps:
+            found.append((relay.read_pcr(p, pcr), relay.read_timestamp(p, timestamps[0])))
+        at = data.find(b"\x47\x41\x00", at + 1)
+    return found
+
+
+class Clock(unittest.TestCase):
+    def test_pcr_and_pts_round_trip_and_shift_together(self):
+        self.assertEqual(clocks(KEYFRAME), [(CLOCK, CLOCK + 63_000)])
+        shifted, last = relay.shift_clock(PAT + KEYFRAME + FILLER, 4_500_000)
+        self.assertEqual(clocks(shifted), [(CLOCK + 4_500_000, CLOCK + 63_000 + 4_500_000)])
+        self.assertEqual(last, CLOCK + 4_500_000)
+        self.assertEqual(shifted[:PACKET], PAT, "tables are not touched")
+        self.assertEqual(relay.first_clock(PAT + KEYFRAME), CLOCK)
+
+    def test_the_clock_wraps_at_33_bits(self):
+        shifted, last = relay.shift_clock(KEYFRAME, relay.TICKS - CLOCK + 5)
+        self.assertEqual(last, 5)
+        self.assertEqual(clocks(shifted)[0][1], 63_005)
 
 
 class Tables(unittest.TestCase):
@@ -132,7 +171,7 @@ class RelayProcess(unittest.TestCase):
             [sys.executable, "-I", str(RELAY), "serve", "--listen", "127.0.0.1", "--port", str(port or self.port),
              "--path", "/s1", "--control", self.socket, "--stream-script", str(self.stream),
              "--streamlink", "/usr/bin/true", "--ffmpeg", str(self.ffmpeg), "--channel", channel,
-             "--idle-first", str(idle_first), "--idle-after", str(idle_after)],
+             "--idle-first", str(idle_first), "--idle-after", str(idle_after), "--version", "9.9.9"],
             stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "RELAY_TEST_DIR": str(self.root)})
 
     def log(self):
@@ -190,13 +229,17 @@ class RelayProcess(unittest.TestCase):
         body = self.read(client, body, b"one_")
         self.assertEqual(body[:3 * PACKET], relay.set_table_version(PAT + PMT, 1) + KEYFRAME,
                          "a viewer must start with the tables and the newest keyframe")
-        self.assertEqual(self.cli("query", self.socket).stdout.split(), ["one", "-", "1"])
+        self.assertEqual(self.cli("query", self.socket).stdout.split(), ["one", "-", "1", "9.9.9"])
         self.assertEqual(self.cli("send", self.socket, "switch", "two", "0").returncode, 0)
         self.assertEqual(self.cli("wait", self.socket, "two", "10").returncode, 0)
         body = self.read(client, b"", b"two_")
         self.assertIn(b"two_", body, "the same connection carries the new channel")
         body = self.read(client, body[-PACKET:], b"never", limit=400_000)
         self.assertEqual(pat_versions(body)[-1], 2, "the new source announces itself with table version 2")
+        # Each source starts its clock at CLOCK; the relay continues it instead of jumping back.
+        pcrs = {pcr for pcr, _ in clocks(body)}
+        self.assertIn(CLOCK + relay.GAP, pcrs, "the second source continues 100 ms after the first")
+        self.assertLessEqual(pcrs, {CLOCK, CLOCK + relay.GAP}, "and never jumps back")
         self.assertTrue(self.wait_for(lambda: not self.running("one")), "the old source is stopped")
         self.assertIn("Bron: two", self.log())
         client.close()

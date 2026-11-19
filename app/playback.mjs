@@ -284,7 +284,7 @@ async function stop() {
     console.log('VLC: andere media blijven spelen.');
     return;
   }
-  if (await waitIdle(Number(process.env.TV_VLC_IDLE_MS || 6000))) console.log('VLC: tv-stream gestopt.');
+  if (await waitIdle(Number(process.env.TV_VLC_IDLE_MS || 3000))) console.log('VLC: tv-stream gestopt.');
   else console.log('VLC: speelt de laatste seconden buffer nog af.');
 }
 
