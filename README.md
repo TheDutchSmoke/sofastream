@@ -102,6 +102,9 @@ Streamlink-log komt, ook niet bij `loglevel=debug` in je config.
 
 `tv --help` toont de commando's. `tv stop` stopt alleen de eigen stream. Sluiten van
 de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
+Een nieuwere kanaalkeuze of `tv stop` gaat altijd voor op een start die nog bezig is,
+ook in een ander venster of bij het eenmalig herstarten na een profielkeuze.
+Ctrl-C tijdens het starten stopt Streamlink als de tv nog niet verbonden is.
 
 ## Development: @dev
 

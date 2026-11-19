@@ -5,8 +5,33 @@ _tv_cancel_profile_retry() {
     rm -f "${TV_CACHE_DIR:-$HOME/.cache/tv}/profile-retry"
 }
 
+# Each start owns the session until a newer start or 'tv stop' replaces it. A start
+# that lost it (a long prepare, a running profile retry, another terminal) must not
+# touch VLC or the job any more. /dev/urandom: a subshell repeats $RANDOM.
+_tv_session_file() {
+    print -r -- "${TV_CACHE_DIR:-$HOME/.cache/tv}/session"
+}
+
+_tv_end_session() {
+    rm -f "$(_tv_session_file)"
+}
+
+_tv_owns_session() {
+    local file="$(_tv_session_file)"
+    [[ -r "$file" && "$(<"$file")" == "$1" ]]
+}
+
+# Ctrl-C or a closed window while starting: unload a job nobody watches yet.
+_tv_abort_start() {
+    local session="$1" job="$2"
+    if _tv_owns_session "$session" && ! grep -qs 'Got HTTP request' "$TV_STREAM_LOG"; then
+        launchctl bootout "$job" 2>/dev/null
+        echo "Afgebroken; Streamlink is gestopt."
+    fi
+}
+
 _tv_profile_retry() {
-    local channel="$1" cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
+    local channel="$1" session="$2" cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
     local marker="$cache/profile-retry" log="$cache/profile-retry.log"
     local token="$$.$RANDOM.$SECONDS"
     print -r -- "$token" > "$marker"
@@ -20,7 +45,8 @@ _tv_profile_retry() {
                 [[ "$(<"$marker")" == "$token" ]] || exit 0
                 rm -f "$marker"
                 print -r -- "$(date +%T) VLC sloot kort na wekken (profielkeuze?); eenmalig opnieuw starten." >> "$log"
-                _tv_start "$channel" noretry >> "$log" 2>&1
+                # Same session: a 'tv stop' or newer choice meanwhile still ends this restart.
+                _tv_start "$channel" noretry "$session" >> "$log" 2>&1
                 exit 0
             fi
             sleep "${TV_PROFILE_RETRY_POLL:-0.5}"
@@ -30,6 +56,7 @@ _tv_profile_retry() {
 }
 
 _tv_start() {
+    setopt localoptions localtraps
     local channel="$1" retry=1
     [[ "$2" == noretry ]] && retry=0
     # A new choice replaces any pending retry for the previous one.
@@ -37,6 +64,8 @@ _tv_start() {
     local label="$TV_LAUNCH_LABEL"
     local domain="gui/$(id -u)"
     local streamlink="$(command -v streamlink)"
+    local cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
+    local superseded="Vervangen door een nieuwere kanaalkeuze of stop."
 
     [[ -z "$streamlink" ]] && {
         echo "❌ Streamlink niet gevonden."
@@ -45,10 +74,22 @@ _tv_start() {
 
     channel=$(python3 "$TV_APP_DIR/tui.py" --normalize-channel "$channel") || return 1
 
+    mkdir -p "$cache"
+    local session="$3"
+    if [[ -n "$session" ]]; then
+        # The profile retry continues the session of the start that scheduled it.
+        _tv_owns_session "$session" || { echo "$superseded"; return 1; }
+    else
+        session=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+        print -r -- "$session" > "$(_tv_session_file)"
+    fi
+
     # Validate the channel before waking the TV or switching apps.
     python3 "$TV_APP_DIR/tui.py" --check-playable "$channel" || return 1
     local woke
     woke=$(node "$TV_APP_DIR/playback.mjs" prepare) || return 1
+    # Checking and waking can take long; a newer choice or 'tv stop' wins meanwhile.
+    _tv_owns_session "$session" || { echo "$superseded"; return 1; }
     # Let VLC drop the previous SofaStream item before its port reopens; otherwise
     # VLC reconnects to it and takes the new stream's only connection. Runs before
     # the snapshot, so it addresses the Apple TV of the previous session.
@@ -63,14 +104,19 @@ _tv_start() {
         return 1
     }
 
+    _tv_owns_session "$session" || { echo "$superseded"; return 1; }
+    # From here on the job changes; an interrupted start must not leave a server
+    # listening without a viewer. Subshells such as $(node …) inherit the trap, so
+    # only this shell cleans up; 'return' would lose the status, hence 'exit'.
+    # _tv_start always runs in its own process (bin/tv, $(…) in the TUI, the retry).
+    local depth=$ZSH_SUBSHELL
+    trap '(( ZSH_SUBSHELL > depth )) || _tv_abort_start "$session" "$domain/$label"; exit 130' INT TERM HUP
     launchctl bootout "$domain/$label" 2>/dev/null
     rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
 
     # A one-shot job: unlike 'launchctl submit' (KeepAlive), launchd must not
     # restart Streamlink after VLC closes the stream or Streamlink fails.
-    local cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
     local job="$cache/$label.plist"
-    mkdir -p "$cache"
     python3 -c 'import plistlib, sys
 job, label, out, err, *args = sys.argv[1:]
 with open(job, "wb") as handle:
@@ -98,6 +144,13 @@ with open(job, "wb") as handle:
         echo "❌ Starten mislukt."
         return 1
     fi
+    if ! _tv_owns_session "$session"; then
+        # 'tv stop' ran during the bootstrap and removed the session: this job is
+        # ours and nobody stops it otherwise. A newer start owns the label itself.
+        [[ -e "$(_tv_session_file)" ]] || launchctl bootout "$domain/$label" 2>/dev/null
+        echo "$superseded"
+        return 1
+    fi
 
     local played=0 output
     output=$(node "$TV_APP_DIR/playback.mjs" play "$channel" 2>&1) || played=$?
@@ -105,12 +158,12 @@ with open(job, "wb") as handle:
     # profile choice closing VLC; the profile retry sees the close and restarts once.
     if (( played == 3 )) && [[ "$woke" == woke ]] && (( retry )); then
         echo "Apple TV is net gewekt en VLC sloot direct; SofaStream start het kanaal één keer opnieuw."
-        _tv_profile_retry "$channel"
+        _tv_profile_retry "$channel" "$session"
         return 0
     fi
     if (( played == 0 )); then
         [[ -n "$output" ]] && print -r -- "$output"
-        [[ "$woke" == woke ]] && (( retry )) && _tv_profile_retry "$channel"
+        [[ "$woke" == woke ]] && (( retry )) && _tv_profile_retry "$channel" "$session"
         return 0
     fi
     [[ -n "$output" ]] && print -r -- "$output" >&2
@@ -392,8 +445,10 @@ EOF
             ;;
 
         stop)
-            # Cancel first: stopping VLC closes the stream, which must not trigger a retry.
+            # Cancel first: stopping VLC closes the stream, which must not trigger a retry,
+            # and a start that is still checking or waking must not go on afterwards.
             _tv_cancel_profile_retry
+            _tv_end_session
             tv_notice=$(node "$TV_APP_DIR/playback.mjs" stop 2>&1) || tv_notice='VLC: stoppen niet bevestigd; geen verbinding of reactie.'
             if launchctl bootout "$domain/$label" 2>/dev/null; then
                 echo "Streamlink: gestopt."

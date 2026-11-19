@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import plistlib
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -44,8 +45,10 @@ node() {{
         return 1
     fi
     [[ "$2" == address ]] && echo 192.0.2.5
+    [[ "$2" == prepare && -n "$TV_TEST_PREPARE_DELAY" ]] && sleep "$TV_TEST_PREPARE_DELAY"
     [[ "$2" == prepare && -n "$TV_TEST_WOKE" ]] && echo woke
     [[ "$2" == play && -n "$TV_TEST_VIEWER" ]] && echo '[cli][info] Got HTTP request from VLC/3.0' >> "$TV_STREAM_LOG"
+    [[ "$2" == play && -n "$TV_TEST_PLAY_DELAY" ]] && sleep "$TV_TEST_PLAY_DELAY"
     [[ "$2" == release && -n "$TV_TEST_RELEASE_FAIL" ]] && {{ echo 'VLC stopt de vorige stream niet.' >&2; return 1; }}
     [[ "$2" == play && -n "$TV_TEST_PLAY_FAIL" ]] && {{ echo 'VLC bevestigt nog geen beeld.' >&2; return 1; }}
     [[ "$2" == play && -n "$TV_TEST_PLAY_DROP" ]] && {{
@@ -65,9 +68,19 @@ launchctl() {{
 tv "$@"
 ''')
 
-    def run_tv(self, *args, unavailable=False, play_fails=False, viewer=False, woke=False, release_fails=False, drops=False):
+    def env(self, unavailable=False, play_fails=False, viewer=False, woke=False, release_fails=False, drops=False,
+            prepare_delay='', play_delay=''):
+        return {**os.environ, 'TV_TEST_PREPARE_DELAY': prepare_delay, 'TV_TEST_PLAY_DELAY': play_delay, 'TV_TEST_WOKE': '1' if woke else '', 'TV_TEST_RELEASE_FAIL': '1' if release_fails else '', 'TV_TEST_PLAY_DROP': '1' if drops else '', 'TV_PROFILE_RETRY_WINDOW': '3', 'TV_PROFILE_RETRY_POLL': '0.1', 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_TEST_PLAY_FAIL': '1' if play_fails else '', 'TV_TEST_VIEWER': '1' if viewer else '','TV_CACHE_DIR': str(self.root/'cache'), 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_APPLE_TV_CONFIG': str(self.root/'apple-tv.json'), 'TV_ACTIVE_TV_CONFIG': str(self.root/'active.json'), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}
+
+    def run_tv(self, *args, **options):
         return subprocess.run(['zsh','-f',str(self.script),*args], text=True, capture_output=True,
-                              env={**os.environ, 'TV_TEST_WOKE': '1' if woke else '', 'TV_TEST_RELEASE_FAIL': '1' if release_fails else '', 'TV_TEST_PLAY_DROP': '1' if drops else '', 'TV_PROFILE_RETRY_WINDOW': '3', 'TV_PROFILE_RETRY_POLL': '0.1', 'TV_TEST_VLC': 'unavailable' if unavailable else 'ready', 'TV_TEST_PLAY_FAIL': '1' if play_fails else '', 'TV_TEST_VIEWER': '1' if viewer else '','TV_CACHE_DIR': str(self.root/'cache'), 'TV_APP_DIR': str(self.root), 'TV_CONFIG_DIR': str(self.root), 'TV_APPLE_TV_CONFIG': str(self.root/'apple-tv.json'), 'TV_ACTIVE_TV_CONFIG': str(self.root/'active.json'), 'TV_STREAM_LOG': str(self.log), 'TV_STREAM_ERR': str(self.root/'stream.err'), 'TV_STREAM_PORT': '18765', 'TV_LAUNCH_LABEL': 'nl.sofastream.fixture'}, timeout=5)
+                              env=self.env(**options), timeout=8)
+
+    def spawn_tv(self, *args, **options):
+        process = subprocess.Popen(['zsh','-f',str(self.script),*args], text=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=self.env(**options), start_new_session=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        return process
 
     def test_invalid_offline_and_unreachable_tv_preserve_existing_stream(self):
         for channel, unavailable in [('bad name', False), ('offline', False), ('star', True)]:
@@ -208,6 +221,70 @@ tv "$@"
         self.assertEqual(self.starts(), 2)
         args = plistlib.loads((self.root/'cache'/'nl.sofastream.fixture.plist').read_bytes())['ProgramArguments']
         self.assertEqual(args[-2], 'https://www.twitch.tv/other')
+
+    def channel_in_job(self):
+        args = plistlib.loads((self.root/'cache'/'nl.sofastream.fixture.plist').read_bytes())['ProgramArguments']
+        return args[-2].rsplit('/', 1)[-1]
+
+    def wait_until_retry_restarts(self):
+        # The retry removes its marker right before it calls _tv_start again.
+        marker = self.root/'cache'/'profile-retry'
+        until = time.monotonic() + 3
+        while time.monotonic() < until and marker.exists():
+            time.sleep(0.05)
+        self.assertFalse(marker.exists(), 'the profile retry did not start')
+
+    def test_stop_cancels_a_profile_retry_that_is_already_restarting(self):
+        # Reported by Fable: the retry sits in a slow prepare (wake, profile choice) when the user stops.
+        self.assertEqual(self.run_tv('star', woke=True, prepare_delay='2').returncode, 0)
+        self.vlc_closes()
+        self.wait_until_retry_restarts()
+        self.assertIn('Streamlink: gestopt.', self.run_tv('stop').stdout)
+        time.sleep(3)
+        self.assertEqual(self.starts(), 1, self.trace.read_text())
+        self.assertIn('Vervangen', (self.root/'cache'/'profile-retry.log').read_text())
+
+    def test_new_channel_is_not_replaced_by_a_running_profile_retry(self):
+        self.assertEqual(self.run_tv('star', woke=True, prepare_delay='2').returncode, 0)
+        self.vlc_closes()
+        self.wait_until_retry_restarts()
+        self.assertEqual(self.run_tv('other').returncode, 0)
+        time.sleep(3)
+        self.assertEqual(self.channel_in_job(), 'other', self.trace.read_text())
+        self.assertEqual(self.starts(), 2)
+
+    def test_stop_in_another_terminal_ends_a_start_that_is_still_waking(self):
+        start = self.spawn_tv('star', prepare_delay='2')
+        time.sleep(0.8)
+        self.assertEqual(self.run_tv('stop').returncode, 0)
+        out, _ = start.communicate(timeout=10)
+        self.assertNotEqual(start.returncode, 0)
+        self.assertIn('Vervangen', out)
+        self.assertEqual(self.starts(), 0, self.trace.read_text())
+        self.assertNotIn('node release', self.calls.read_text().splitlines(), 'a replaced start must not stop VLC')
+
+    def interrupt_during_play(self, viewer):
+        start = self.spawn_tv('star', play_delay='5', viewer=viewer)
+        until = time.monotonic() + 5
+        while time.monotonic() < until and not self.starts():
+            time.sleep(0.05)
+        self.assertEqual(self.starts(), 1)
+        time.sleep(0.3)
+        os.killpg(start.pid, signal.SIGINT)  # Ctrl-C reaches the whole foreground group
+        out, _ = start.communicate(timeout=10)
+        return start.returncode, out, self.trace.read_text().splitlines()
+
+    def test_ctrl_c_while_starting_unloads_the_waiting_server(self):
+        code, out, launches = self.interrupt_during_play(viewer=False)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(launches[-1].startswith('bootout '), launches)
+        self.assertIn('Afgebroken', out)
+
+    def test_ctrl_c_after_the_tv_connected_keeps_the_stream(self):
+        # Like closing the menu: a stream the TV already plays keeps playing.
+        code, _, launches = self.interrupt_during_play(viewer=True)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(launches[-1].startswith('bootstrap '), launches)
 
     def test_retry_window_expires(self):
         self.run_tv('star', woke=True)
