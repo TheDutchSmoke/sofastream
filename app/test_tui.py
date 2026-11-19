@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -120,6 +121,43 @@ class TuiTests(unittest.TestCase):
                 tv.main()
             self.assertIn("favoriet aan", output.getvalue())
             self.assertEqual((root/'priority').read_text(), 'star\n')
+
+    def twitch_reply(self, users):
+        return subprocess.CompletedProcess([], 0, json.dumps({"data": {"users": users}}), "")
+
+    def test_status_query_uses_one_root_field_for_a_full_batch(self):
+        # Twitch rejects more than 15 aliased root fields; a batch of 50 must be one field.
+        channels = [f"channel{i}" for i in range(50)]
+        users = [{"login": login, "stream": None} for login in channels]
+        with patch.object(tv.subprocess, "run", return_value=self.twitch_reply(users)) as run:
+            statuses = tv.fetch_status(channels)
+        request = json.loads(run.call_args.kwargs["input"])
+        self.assertNotRegex(request["query"], r"\w+\s*:\s*users?\s*\(")  # no aliases
+        self.assertEqual(request["query"].count("users("), 1)
+        self.assertEqual(request["variables"]["logins"], channels)
+        self.assertEqual({item["status"] for item in statuses.values()}, {"offline"})
+        self.assertEqual(len(statuses), 50)
+
+    def test_status_reply_maps_live_offline_and_missing(self):
+        users = [{"login": "Live", "stream": {"type": "live", "viewersCount": 42, "game": {"name": "Chess\n"}}},
+                 None,
+                 {"login": "off", "stream": None}]
+        with patch.object(tv.subprocess, "run", return_value=self.twitch_reply(users)):
+            statuses = tv.fetch_status(["live", "gone", "off"])
+        self.assertEqual(statuses["live"], {"status": "live", "viewers": 42, "game": "Chess"})
+        self.assertEqual(statuses["gone"], {"status": "missing"})
+        self.assertEqual(statuses["off"], {"status": "offline"})
+
+    def test_misaligned_status_reply_never_guesses_missing(self):
+        with patch.object(tv.subprocess, "run", return_value=self.twitch_reply([None, {"login": "b", "stream": None}])):
+            statuses = tv.fetch_status(["a", "b", "c"])
+        self.assertEqual(statuses, {"b": {"status": "offline"}})
+
+    def test_status_errors_keep_the_previous_cache(self):
+        reply = subprocess.CompletedProcess([], 0, json.dumps({"errors": [{"message": "limit"}]}), "")
+        with patch.object(tv.subprocess, "run", return_value=reply):
+            with self.assertRaises(ValueError):
+                tv.fetch_status(["a"])
 
 
 if __name__ == "__main__":
