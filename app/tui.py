@@ -67,8 +67,20 @@ def check_playable(login):
                                 capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired:
         raise ValueError("Twitch reageert te traag. Je huidige stream blijft ongewijzigd.") from None
-    if result.returncode or not result.stdout.strip().startswith(("http://", "https://")):
-        raise ValueError(f"{login} is offline of niet bereikbaar. Je huidige stream blijft ongewijzigd.")
+    if not result.returncode and result.stdout.strip().startswith(("http://", "https://")):
+        return
+    kept = "Je huidige stream blijft ongewijzigd."
+    # Even with --loglevel none, Streamlink ends with one 'error: …' line.
+    error = next((line.strip()[len("error:"):].strip()
+                  for line in (result.stdout + "\n" + result.stderr).splitlines()
+                  if line.strip().startswith("error:")), "")
+    if "Unauthorized" in error:
+        # check_playable passes no login, so this one comes from the user's own Streamlink config.
+        raise ValueError("Twitch weigert de login uit je Streamlink-config (config.twitch): verlopen of ongeldig. "
+                         f"Vernieuw of verwijder de regel twitch-api-header. {kept}")
+    if error and "No playable streams" not in error:
+        raise ValueError(f"Streamlink: {clean(error)} {kept}")
+    raise ValueError(f"{login} is offline of niet bereikbaar. {kept}")
 
 
 def read_favorites(path):

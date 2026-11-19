@@ -3,13 +3,21 @@
 # optional Twitch login is read here from the macOS Keychain. It never ends up in
 # the launchd job definition, process arguments, settings files or the stream log:
 # Streamlink reads it from a private (0600) temporary config file that is removed
-# right after startup.
+# right after startup, and also when the job is stopped before that.
 #
 # Usage: stream.zsh <streamlink> <2k:0|1> <keychain-service> <streamlink args...>
 streamlink="$1" hq="$2" service="$3"
 shift 3
 
-extra=()
+tmpdir="${TV_PRIVATE_TMP:-$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)}"
+# A login file survives only a hard kill. Sweep those on every start, also with 2K
+# off; files under a minute old may belong to a stable/dev session starting now.
+/bin/rm -f -- "${tmpdir:-/tmp}"/sofastream-login.*(N.mm+0)
+
+# Always on the command line: it overrides 'loglevel=debug' in the user's own
+# Streamlink config, which would print the login header into the stream log.
+extra=(--loglevel info)
+cfg=
 if [[ "$hq" == 1 ]]; then
     # 1440p is only offered in H.265 and normally only to a logged-in viewer.
     extra+=(--twitch-supported-codecs h264,h265,av1)
@@ -23,9 +31,6 @@ if [[ "$hq" == 1 ]]; then
         print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; opnieuw ophalen voor 2K. Nu maximaal 1080p."
     else
         umask 077
-        tmpdir="${TV_PRIVATE_TMP:-$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)}"
-        # A stopped job can kill the remover below; sweep leftovers older than a minute.
-        /bin/rm -f -- "${tmpdir:-/tmp}"/sofastream-login.*(N.mm+0)
         cfg=$(/usr/bin/mktemp "${tmpdir:-/tmp}/sofastream-login.XXXXXX") || exit 1
         print -r -- "twitch-api-header=Authorization=OAuth $token" > "$cfg"
         # --config skips Streamlink's default config files, so pass existing ones first.
@@ -35,10 +40,26 @@ if [[ "$hq" == 1 ]]; then
             [[ -f "$default" ]] && extra+=(--config "$default")
         done
         extra+=(--config "$cfg")
-        # Streamlink reads its config at startup; remove the file shortly after.
-        ( /bin/sleep "${TV_LOGIN_CONFIG_TTL:-15}"; /bin/rm -f -- "$cfg" ) &!
     fi
     unset token
+else
+    # The user's own Streamlink config may enable H.265/AV1 for other tools; with
+    # 2K off the setting must hold. Command-line options override config files.
+    extra+=(--twitch-supported-codecs h264)
 fi
 
-exec "$streamlink" "${extra[@]}" "$@"
+[[ -z "$cfg" ]] && exec "$streamlink" "${extra[@]}" "$@"
+
+# With a login file, Streamlink runs as a child so this shell can remove the file.
+# launchd stops the job's whole process group, so a background remover would die
+# with it; the trap covers 'tv stop' and a channel switch within the TTL.
+pid=
+trap '/bin/rm -f -- "$cfg"; [[ -n "$pid" ]] && { kill -TERM $pid 2>/dev/null; wait $pid 2>/dev/null; }; exit 143' TERM INT HUP
+"$streamlink" "${extra[@]}" "$@" &
+pid=$!
+# Streamlink reads its config at startup; remove the login after that, or at once
+# when Streamlink has already ended.
+end=$(( SECONDS + ${TV_LOGIN_CONFIG_TTL:-15} ))
+while (( SECONDS < end )) && kill -0 $pid 2>/dev/null; do /bin/sleep 0.2; done
+/bin/rm -f -- "$cfg"
+wait $pid

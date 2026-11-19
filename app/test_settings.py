@@ -117,6 +117,17 @@ class SettingsTests(unittest.TestCase):
         self.run_setting('hq')
         self.assertIn(': aan · Twitch-login gevonden', self.run_setting('menu').stdout)
 
+    def test_2k_menu_reports_a_login_in_the_streamlink_config(self):
+        # Streamlink also reads the user's own config for SofaStream; the menu must not claim "no login".
+        self.fake_security(found=False)
+        folder = self.root/'Library/Application Support/streamlink'
+        folder.mkdir(parents=True)
+        (folder/'config.twitch').write_text('twitch-supported-codecs=h264,h265,av1\ntwitch-api-header=Authorization=OAuth secret0123456789\n')
+        menu = self.run_setting('menu').stdout
+        self.assertIn(': uit · login uit je Streamlink-config', menu)
+        self.assertNotIn('secret0123456789', menu)
+        self.assertNotIn('Zonder Twitch-login', self.run_setting('hq').stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

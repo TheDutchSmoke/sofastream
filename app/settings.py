@@ -137,7 +137,12 @@ def menu():
     print(f"pair\t⌘ Automatische start: {pairing} (pincode op tv)")
     enabled = current.get("autoStart", True)
     print(f"auto\tAutomatisch wakker maken en VLC openen: {'aan' if enabled else 'uit'}")
-    login = "Twitch-login gevonden" if twitch_login_present() else "geen Twitch-login, max 1080p"
+    if twitch_login_present():
+        login = "Twitch-login gevonden"
+    elif streamlink_config_login():
+        login = "login uit je Streamlink-config"
+    else:
+        login = "geen Twitch-login, max 1080p"
     print(f"hq\t2K (1440p, H.265; Apple TV 4K): {'aan' if current.get('twitch2k', False) else 'uit'} · {login}")
     if DEV:
         print("dev-info\tDEV · Versie en gescheiden testomgeving bekijken")
@@ -155,12 +160,27 @@ def twitch_login_present():
         return False
 
 
+def streamlink_config_login():
+    """True if the user's own Streamlink config sends a Twitch login. Streamlink
+    reads those files for SofaStream too; only the option name is matched."""
+    for folder in (Path.home() / "Library/Application Support/streamlink", Path.home() / ".config/streamlink"):
+        for name in ("config", "config.twitch"):
+            try:
+                lines = (folder / name).read_text(errors="replace").splitlines()
+            except OSError:
+                continue
+            if any(re.match(r"\s*(--)?twitch-api-header\s*=\s*Authorization\b", line) for line in lines):
+                return True
+    return False
+
+
 def toggle_2k():
     current = load()
     current["twitch2k"] = not current.get("twitch2k", False)
     save(current)
     state = "aan" if current["twitch2k"] else "uit"
-    hint = "" if not current["twitch2k"] or twitch_login_present() else " Zonder Twitch-login blijft het maximaal 1080p."
+    has_login = twitch_login_present() or streamlink_config_login()
+    hint = "" if not current["twitch2k"] or has_login else " Zonder Twitch-login blijft het maximaal 1080p."
     print(f"2K {state}. Geldt vanaf je volgende kanaalkeuze.{hint}")
 
 
