@@ -175,9 +175,11 @@ controleert de officiële SHA-256 van de download.
 Op echte hardware bevestigd (15 november 2026): VLC-playback, automatisch wekken
 en VLC openen, en video sluiten op de tv laat de Mac-stream gestopt. Het eenmalig
 herstarten na een profielkeuze moet nog op hardware worden bevestigd.
-Op 19 november bevestigd met een prototype van het doorgeefluik: wisselen binnen één
-stream (H.265 1440p ↔ H.264 1080p) speelt door op VLC 3.0.24. De versie in `app/relay.py`
-moet nog op hardware worden bevestigd.
+Op 19 november bevestigd op VLC 3.0.24: 0.3.0 start na een eerdere stream zonder VLC te
+herstarten, en wisselt binnen één stream (H.265 1440p ↔ H.264 1080p), ongeveer een seconde
+achter de browser. Een wissel duurt 2–5 s: zo lang levert Twitch het eerste beeld. Na veel
+wissels raakte VLC uit de pas (geluid weg) doordat elke bron zijn klok bij nul begon; sinds
+0.3.1 loopt de klok door (op de Mac nagebootst: 0 in plaats van 88 weggegooide beelden).
 CI bewijst geen hardwarewerking.
 
 Bronnen: [Streamlink HTTP-uitvoer](https://streamlink.github.io/cli.html#player-options),

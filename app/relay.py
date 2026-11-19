@@ -16,7 +16,7 @@ relay ends (VLC closed the video), like the one-shot server did.
   relay.py serve --listen ADDR --port N --control SOCKET --stream-script PATH
                  --streamlink PATH --ffmpeg PATH --service NAME --channel C --hq 0|1
   relay.py send SOCKET status | switch CHANNEL HQ | stop
-  relay.py query SOCKET          -> "channel pending viewers"
+  relay.py query SOCKET          -> "channel pending viewers version"
   relay.py wait SOCKET CHANNEL [SECONDS]
 """
 import argparse
@@ -102,6 +102,79 @@ def set_table_version(packets, version):
     return bytes(out_)
 
 
+TICKS = 1 << 33  # the 90 kHz MPEG clock wraps at 2**33
+GAP = 9000  # 100 ms between the last clock of one source and the first of the next
+
+
+def read_pcr(p, i):
+    return (p[i] << 25) | (p[i + 1] << 17) | (p[i + 2] << 9) | (p[i + 3] << 1) | (p[i + 4] >> 7)
+
+
+def write_pcr(p, i, base):
+    extension = ((p[i + 4] & 1) << 8) | p[i + 5]
+    p[i:i + 6] = bytes([(base >> 25) & 0xFF, (base >> 17) & 0xFF, (base >> 9) & 0xFF, (base >> 1) & 0xFF,
+                        ((base & 1) << 7) | 0x7E | (extension >> 8), extension & 0xFF])
+
+
+def read_timestamp(p, i):
+    return (((p[i] >> 1) & 0x07) << 30) | (p[i + 1] << 22) | ((p[i + 2] >> 1) << 15) | (p[i + 3] << 7) | (p[i + 4] >> 1)
+
+
+def write_timestamp(p, i, value):
+    p[i:i + 5] = bytes([(p[i] & 0xF0) | ((value >> 29) & 0x0E) | 1, (value >> 22) & 0xFF,
+                        ((value >> 14) & 0xFE) | 1, (value >> 7) & 0xFF, ((value << 1) & 0xFE) | 1])
+
+
+def clock_fields(p):
+    """Positions of the PCR and of a PES header's PTS/DTS in one packet."""
+    pcr = timestamps = None
+    has_adaptation = p[3] & 0x20
+    if has_adaptation and p[4] >= 7 and p[5] & 0x10:
+        pcr = 6
+    payload = 4 + (1 + p[4] if has_adaptation else 0)
+    if p[1] & 0x40 and p[3] & 0x10 and payload + 14 <= PACKET and p[payload:payload + 3] == b"\x00\x00\x01":
+        flags = p[payload + 7] >> 6
+        if flags in (2, 3) and (p[payload + 3] & 0xE0 == 0xE0 or p[payload + 3] & 0xE0 == 0xC0):
+            timestamps = [payload + 9] + ([payload + 14] if flags == 3 and payload + 19 <= PACKET else [])
+    return pcr, timestamps
+
+
+def first_clock(packets):
+    """The first PCR (else the first PTS) in 90 kHz ticks, or None."""
+    pts = None
+    for start in range(0, len(packets) - PACKET + 1, PACKET):
+        p = packets[start:start + PACKET]
+        if p[0] != 0x47:
+            continue
+        pcr, timestamps = clock_fields(p)
+        if pcr is not None:
+            return read_pcr(p, pcr)
+        if pts is None and timestamps:
+            pts = read_timestamp(p, timestamps[0])
+    return pts
+
+
+def shift_clock(packets, offset):
+    """Move every PCR, PTS and DTS by offset ticks. Returns the data and its last PCR.
+    Each source starts its clock near zero; shifted, the stream's clock never jumps back
+    at a switch, so VLC keeps its timing (it dropped 'late' frames and lost sound)."""
+    data = bytearray(packets)
+    last = None
+    for start in range(0, len(data) - PACKET + 1, PACKET):
+        p = memoryview(data)[start:start + PACKET]
+        if p[0] != 0x47:
+            continue
+        pcr, timestamps = clock_fields(p)
+        if pcr is not None:
+            last = (read_pcr(p, pcr) + offset) % TICKS
+            if offset:
+                write_pcr(p, pcr, last)
+        for i in (timestamps or ()) if offset else ():
+            write_timestamp(p, i, (read_timestamp(p, i) + offset) % TICKS)
+        p.release()
+    return bytes(data), last
+
+
 class Source:
     """One channel: stream.zsh (Streamlink) piped into an ffmpeg remux to MPEG-TS."""
 
@@ -109,6 +182,7 @@ class Source:
         self.relay, self.channel, self.version = relay, channel, version
         self.quality = None
         self.stopped = False
+        self.offset = 0  # clock shift in 90 kHz ticks, set when the source starts playing
         self.streamlink = subprocess.Popen(relay.source_command(channel, hq), stdin=subprocess.DEVNULL,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.ffmpeg = subprocess.Popen(relay.ffmpeg_command(), stdin=self.streamlink.stdout,
@@ -150,7 +224,7 @@ class Source:
                 process.terminate()
         for process in (self.streamlink, self.ffmpeg):
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
 
@@ -164,6 +238,7 @@ class Relay:
         self.keyframe = None  # (seq, offset) of the newest video keyframe in recent
         self.tables = (None, None)  # newest PAT and PMT of the current source
         self.seq = 0
+        self.last_clock = None  # the newest PCR sent to viewers
         self.current = None
         self.pending = None
         self.version = 0
@@ -181,8 +256,7 @@ class Relay:
     def ffmpeg_command(self):
         # Video and audio only: the same PIDs for every source. Twitch's ID3 track is not needed.
         return [self.args.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
-                "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
-                "-mpegts_flags", "+initial_discontinuity", "-f", "mpegts", "pipe:1"]
+                "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "mpegts", "pipe:1"]
 
     def switch(self, channel, hq):
         with self.cond:
@@ -199,6 +273,9 @@ class Relay:
         replaced = None
         with self.cond:
             if source is self.pending:
+                start = first_clock(data)
+                if self.last_clock is not None and start is not None:
+                    source.offset = (self.last_clock + GAP - start) % TICKS
                 replaced, self.current, self.pending = self.current, source, None
                 self.recent.clear()
                 self.recent_bytes = 0
@@ -207,6 +284,9 @@ class Relay:
                 out(f"[relay][info] Bron: {source.channel}" + (f" · {source.quality}" if source.quality else ""))
             elif source is not self.current:
                 return
+            data, last = shift_clock(data, source.offset)
+            if last is not None:
+                self.last_clock = last
             self.seq += 1
             self.recent.append((self.seq, data))
             self.recent_bytes += len(data)
@@ -258,7 +338,8 @@ class Relay:
             return {"channel": current.channel if current else None,
                     "quality": current.quality if current else None,
                     "pending": self.pending.channel if self.pending else None,
-                    "viewers": self.viewers, "connections": self.connections, "path": self.args.path}
+                    "viewers": self.viewers, "connections": self.connections, "path": self.args.path,
+                    "version": self.args.version}
 
     def viewer(self, joined):
         with self.cond:
@@ -292,8 +373,12 @@ class Relay:
         with self.cond:
             sources = [s for s in (self.current, self.pending) if s]
             self.cond.notify_all()
-        for source in sources:
-            source.stop()
+        # In parallel: 'tv stop' waits for this before VLC is checked.
+        stoppers = [threading.Thread(target=source.stop) for source in sources]
+        for stopper in stoppers:
+            stopper.start()
+        for stopper in stoppers:
+            stopper.join()
 
 
 class StreamServer(ThreadingHTTPServer):
@@ -415,11 +500,11 @@ def send(path, words, timeout=3):
 
 
 def query(path):
-    """For tv.zsh: 'channel pending viewers' on one line, '-' for none; exit 1 if not running."""
+    """For tv.zsh: 'channel pending viewers version' on one line, '-' for none; exit 1 if not running."""
     state = send(path, ["status"])
     if not state.get("ok"):
         raise ValueError("no status")
-    return f"{state['channel'] or '-'} {state['pending'] or '-'} {int(state['viewers'])}"
+    return f"{state['channel'] or '-'} {state['pending'] or '-'} {int(state['viewers'])} {state.get('version') or '-'}"
 
 
 def wait_for(path, channel, timeout):
@@ -467,6 +552,7 @@ def main():
     parser.add_argument("--service", default="streamlink-twitch-auth")
     parser.add_argument("--channel", required=True)
     parser.add_argument("--hq", choices=["0", "1"], default="0")
+    parser.add_argument("--version", default="")
     parser.add_argument("--idle-first", type=float, default=60)
     parser.add_argument("--idle-after", type=float, default=15)
     serve(parser.parse_args())
