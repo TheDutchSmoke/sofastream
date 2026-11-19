@@ -157,6 +157,27 @@ class StreamLauncherTests(unittest.TestCase):
         self.assertFalse(any('OAuth' in a for a in args))
         self.assertTrue(any('geen Twitch-login' in a for a in args))
 
+    def config_login(self):
+        folder = self.root/'Library/Application Support/streamlink'
+        folder.mkdir(parents=True)
+        (folder/'config.twitch').write_text('twitch-api-header=Authorization=OAuth configtoken0123456789\n')
+
+    def test_2k_with_only_a_streamlink_config_login_says_so(self):
+        # Streamlink reads that config itself, so 2K works; the log must not claim "max 1080p".
+        self.config_login()
+        self.env['TV_SECURITY_BIN'] = str(self.security(''))
+        lines = self.run_stream('1')
+        self.assertIn('[sofastream][info] 2K met de Twitch-login uit je Streamlink-config.', lines)
+        self.assertFalse(any('1080p' in line or 'configtoken' in line for line in lines), lines)
+        self.assertIn('--twitch-supported-codecs', lines)
+
+    def test_expired_keychain_login_falls_back_to_the_config_login(self):
+        self.config_login()
+        self.env['TV_CURL_BIN'] = str(self.curl('401'))
+        lines = self.run_stream('1')
+        self.assertTrue(any('verlopen; 2K gebruikt nu de login uit je Streamlink-config' in line for line in lines), lines)
+        self.assertFalse(any(TOKEN in line for line in lines))
+
     def test_expired_login_is_not_sent(self):
         self.env['TV_CURL_BIN'] = str(self.curl('401'))
         args = self.run_stream('1')

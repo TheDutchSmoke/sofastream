@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseStreamStatus, describeStreamStatus } from './stream-status.mjs';
+import { parseStreamStatus, describeStreamStatus, parseStreamQuality } from './stream-status.mjs';
 
 const run = promisify(execFile);
 const folder = await mkdtemp(join(tmpdir(), 'tv-playback-'));
@@ -112,6 +112,14 @@ try {
   const exited = parseStreamStatus('state = waiting\nlast exit code = 1\n');
   assert.match(describeStreamStatus(exited), /niet actief · foutcode 1/);
   assert.match(describeStreamStatus(parseStreamStatus('')), /niet beschikbaar/);
+  // The served quality comes from Streamlink's log of the current session.
+  assert.equal(parseStreamQuality('[cli][info] Available streams: 1080p60, 1440p60 (best)\n[cli][info] Opening stream: 1440p60 (hls)\n'), '1440p60 · 2K');
+  assert.equal(parseStreamQuality('[cli][info] Opening stream: 1080p60 (hls)'), '1080p60');
+  assert.equal(parseStreamQuality('[cli][info] Opening stream: 2160p60 (hls)'), '2160p60 · 4K');
+  assert.equal(parseStreamQuality('[cli][info] Starting server, access with one of:'), null, 'No quality before VLC connects');
+  assert.equal(parseStreamQuality('[cli][info] Opening stream: \x1b[2Jx (hls)'), null, 'Log text never reaches the label unchecked');
+  assert.match(describeStreamStatus({ ...running, quality: '1440p60 · 2K' }), /actief · star · 1440p60 · 2K · PID 123/);
+  console.log('PASS: stream quality in the status');
   assert.equal((await invoke('check')).stdout, '');
   assert.equal((await invoke('prepare')).stdout, '', 'Ready VLC reports no wake');
   console.log('PASS: prepare with VLC ready');

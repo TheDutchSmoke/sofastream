@@ -187,6 +187,7 @@ _tv_menu
         screen = Screen(columns=columns)
         screen.report_cursor = lambda row, col: os.write(master, f"\x1b[{row};{col}R".encode())
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        raw = []  # everything the menu wrote, for the screen-switch checks
 
         def pump(duration=0.25):
             until = time.monotonic() + duration
@@ -196,7 +197,9 @@ _tv_menu
                         data = os.read(master, 65536)
                     except OSError:
                         return
-                    screen.feed(decoder.decode(data))
+                    text = decoder.decode(data)
+                    raw.append(text)
+                    screen.feed(text)
 
         def visible(text, timeout=5):
             deadline = time.monotonic() + timeout
@@ -227,6 +230,8 @@ _tv_menu
 
         try:
             visible("Minecraft")
+            # Like less or top: the menu draws on its own screen, not below earlier output.
+            assert "\x1b[?1049h" in "".join(raw), "menu did not switch to its own screen"
             os.write(master, b"doesnotexist123\r")
             visible("Geen resultaten")
             assert process.poll() is None
@@ -268,6 +273,8 @@ _tv_menu
             click("alpha")
             visible("Test: alpha gestart voor Apple TV.")
             assert started.read_text().splitlines() == ["alpha"]
+            # The progress line was replaced by the redrawn menu, not stacked above it.
+            assert not any("Kanaal controleren" in line for line in screen.lines()), "\n".join(screen.lines())
 
             click("star ", button=2)
             visible("star: favoriet uit.")
@@ -364,6 +371,9 @@ _tv_menu
             click("[Sluiten]")
             process.wait(timeout=4)
             assert process.returncode == 0
+            pump(0.3)
+            output = "".join(raw)
+            assert output.rfind("\x1b[?1049l") > output.rfind("\x1b[?1049h"), "closing must restore the normal screen"
             print(f"PASS ({columns} columns): keyboard/mouse, cancelled/invalid input, empty search/list, favorites, refresh failure/recovery, navigation, status/stop/import, logs, closing.")
         finally:
             if process.poll() is None:

@@ -173,14 +173,52 @@ with open(job, "wb") as handle:
 }
 
 _tv_menu() {
-    local favfile="$TV_CONFIG_DIR/favorites"
-    mkdir -p "$TV_CONFIG_DIR"
-    touch "$favfile"
-
     command -v fzf >/dev/null || {
         echo "❌ fzf ontbreekt. Installeer met: brew install fzf"
         return 1
     }
+    _tv_fullscreen _tv_menu_loop
+}
+
+# The menu owns the terminal like less or top: its own screen at full height, so
+# progress lines and earlier output never stack above it, and the terminal is back
+# as it was on exit. fzf runs inline (--height=100%) inside that screen; without
+# --height it switches screens itself and drops back to the normal one on exit.
+_tv_fullscreen() {
+    setopt localoptions localtraps
+    if [[ -n "$TV_FULLSCREEN" ]]; then
+        "$@"
+        return
+    fi
+    local -x TV_FULLSCREEN=1
+    trap '_tv_leave_screen; exit 130' INT TERM HUP
+    print -n $'\e[?1049h'
+    _tv_clear
+    {
+        "$@"
+    } always {
+        _tv_leave_screen
+    }
+}
+
+_tv_leave_screen() {
+    print -n $'\e[?1049l'
+}
+
+_tv_clear() {
+    print -n $'\e[H\e[2J'
+}
+
+# A short notice while the menu waits; the next draw replaces it.
+_tv_progress() {
+    _tv_clear
+    print -r -- $'\n\n    '"$1"
+}
+
+_tv_menu_loop() {
+    local favfile="$TV_CONFIG_DIR/favorites"
+    mkdir -p "$TV_CONFIG_DIR"
+    touch "$favfile"
 
     local items channel choice remove view_label input_title close_label
     local -a logfiles
@@ -190,13 +228,14 @@ _tv_menu() {
     local -x TV_TUI_NOTICE=''
     local -a refresh_args
     local -a finder_style=(
-        --ansi --height=85% --min-height=16 --layout=reverse
+        --ansi --height=100% --layout=reverse
         --border=rounded --margin=1 --padding=1,2
         --pointer='▸' --prompt='Zoek › ' --info=inline-right
         --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,hl:#c4b5fd,hl+:#e9d5ff,border:#7c3aed,label:#c4b5fd,header:#94a3b8,prompt:#c4b5fd,pointer:#a78bfa,info:#64748b,spinner:#a78bfa'
     )
 
     while true; do
+        _tv_clear
         TV_TUI_COLUMNS=${COLUMNS:-100}
         items=$(python3 "$metadata_helper" --view "$TV_TUI_VIEW" --color "${refresh_args[@]}") || return 1
         refresh_args=()
@@ -255,7 +294,7 @@ _tv_menu() {
                 elif [[ "$choice" == action:add ]]; then
                     TV_TUI_NOTICE=$(python3 "$metadata_helper" --add "$channel" 2>&1) || :
                 else
-                    echo 'Kanaal controleren en openen op Apple TV…'
+                    _tv_progress 'Kanaal controleren en openen op Apple TV…'
                     TV_TUI_NOTICE=$(_tv_start "$channel" 2>&1) || :
                 fi
                 ;;
@@ -278,12 +317,12 @@ _tv_menu() {
                 ;;
 
             action:import)
-                echo 'GUI-follows importeren…'
+                _tv_progress 'GUI-follows importeren…'
                 TV_TUI_NOTICE=$(tv fav import 2>&1) || :
                 ;;
 
             action:status)
-                echo 'Stream- en tv-status ophalen…'
+                _tv_progress 'Stream- en tv-status ophalen…'
                 TV_TUI_NOTICE=$(tv status 2>&1) || :
                 TV_TUI_NOTICE="Op $(date +%H:%M:%S) · $TV_TUI_NOTICE"
                 ;;
@@ -302,7 +341,7 @@ _tv_menu() {
                 ;;
 
             action:stop)
-                echo 'Tv-stream stoppen…'
+                _tv_progress 'Tv-stream stoppen…'
                 TV_TUI_NOTICE=$(tv stop 2>&1) || :
                 ;;
 
@@ -311,7 +350,8 @@ _tv_menu() {
                 [[ -f $TV_STREAM_LOG ]] && logfiles+=("$TV_STREAM_LOG")
                 [[ -s $TV_STREAM_ERR ]] && logfiles+=("$TV_STREAM_ERR")
                 if (( ${#logfiles} )); then
-                    less -P 'q: terug  •  F: live volgen  •  :n: volgend log' +G "${logfiles[@]}"
+                    # -X: stay on the menu's screen; less would otherwise leave it on exit.
+                    less -X -P 'q: terug  •  F: live volgen  •  :n: volgend log' +G "${logfiles[@]}"
                 else
                     TV_TUI_NOTICE='Nog geen Streamlink-log.'
                 fi
@@ -322,7 +362,7 @@ _tv_menu() {
                 if [[ "$TV_TUI_VIEW" == offline ]]; then
                     TV_TUI_NOTICE="$channel is offline. Kies een live kanaal."
                 else
-                    echo 'Kanaal controleren en openen op Apple TV…'
+                    _tv_progress 'Kanaal controleren en openen op Apple TV…'
                     TV_TUI_NOTICE=$(_tv_start "$channel" 2>&1) || :
                 fi
                 ;;
@@ -339,11 +379,16 @@ _tv_menu() {
 }
 
 _tv_settings() {
+    _tv_fullscreen _tv_settings_loop
+}
+
+_tv_settings_loop() {
     local rows choice notice=''
     while true; do
+        _tv_clear
         rows=$(python3 "$TV_APP_DIR/settings.py" menu) || return 1
         choice=$(print -r -- "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
-            --height=85% --min-height=16 --layout=reverse --border=rounded --margin=1 --padding=1,2 \
+            --height=100% --layout=reverse --border=rounded --margin=1 --padding=1,2 \
             --border-label=" SOFASTREAM${TV_DEV_MODE:+ @DEV} · INSTELLINGEN " \
             --header-lines=2 --header-first --header="$notice" --prompt='Kies › ' \
             --color='bg:#101019,fg:#cbd5e1,bg+:#29213e,fg+:#ffffff,border:#7c3aed,prompt:#c4b5fd,pointer:#a78bfa' \
@@ -352,7 +397,7 @@ _tv_settings() {
         case "$choice" in
             device:*) notice=$(python3 "$TV_APP_DIR/settings.py" select "${choice#device:}" 2>&1) || : ;;
             scan)
-                echo 'Apple TVs zoeken op het lokale netwerk…'
+                _tv_progress 'Apple TVs zoeken op het lokale netwerk…'
                 notice=$(python3 "$TV_APP_DIR/settings.py" scan 2>&1) || :
                 ;;
             pair)
