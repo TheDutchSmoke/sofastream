@@ -91,7 +91,10 @@ Streamlink-log komt, ook niet bij `loglevel=debug` in je config.
 - Ctrl-R: Twitch-status verversen.
 - Esc: zoekopdracht wissen, teruggaan of sluiten.
 - Beheer: favorieten, GUI-import, status, stoppen, logs en koppelen.
-- De status in de bovenrand volgt de Mac-stream automatisch, zonder de tv te bedienen.
+- De status in de bovenrand volgt de Mac-stream automatisch, zonder de tv te bedienen,
+  met de kwaliteit die de tv krijgt, bijvoorbeeld `ACTIEF · kanaal · 1440p60 · 2K`.
+- Het menu gebruikt het hele terminalvenster, zoals `less` of `top`; na het sluiten
+  staat je terminal er weer bij zoals ervoor.
 - Video sluiten op de tv sluit de Mac-stream zodra VLC de HTTP-verbinding verbreekt.
 - De melding ‘Afspelen gestart’ is een bevestiging van die actie; ‘Status’ is een
   gedateerde momentopname. De bovenrand geeft de actuele Mac-status.
