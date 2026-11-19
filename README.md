@@ -2,7 +2,8 @@
 
 Twitch kijken op Apple TV vanuit een terminal op je Mac. Live kanalen worden op
 kijkeraantal gesorteerd, met je sterren bovenaan. Offline kanalen hebben een eigen
-overzicht. De video speelt in VLC op Apple TV; Streamlink op de Mac levert de stream.
+overzicht. De video speelt in VLC op Apple TV; op de Mac filtert Streamlink de reclame
+en houdt een doorgeefluik (`app/relay.py`) één stream naar VLC open.
 
 ## Installeren
 
@@ -98,10 +99,9 @@ Streamlink-log komt, ook niet bij `loglevel=debug` in je config.
 - Video sluiten op de tv sluit de Mac-stream zodra VLC de HTTP-verbinding verbreekt.
 - De melding ‘Afspelen gestart’ is een bevestiging van die actie; ‘Status’ is een
   gedateerde momentopname. De bovenrand geeft de actuele Mac-status.
-- Bij een ander kanaal laat VLC eerst de vorige stream los, en pas daarna start de
-  nieuwe. ‘Afspelen gestart’ verschijnt pas als VLC de stream ook echt ophaalt.
-  Verbreekt VLC hem meteen, dan zegt SofaStream dat: sluit VLC dan op de Apple TV
-  (twee keer op de tv-knop, VLC omhoog vegen) en kies het kanaal opnieuw.
+- Een ander kanaal wisselt binnen dezelfde stream: VLC krijgt geen opdracht, het oude
+  kanaal speelt tot het nieuwe beeld heeft. (VLC 3.0.24 op tvOS faalt op een tweede
+  item in één sessie en opent een stream met een korte proefverbinding.)
 
 `tv --help` toont de commando's. `tv stop` stopt alleen de eigen stream. Sluiten van
 de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.
@@ -175,10 +175,9 @@ controleert de officiële SHA-256 van de download.
 Op echte hardware bevestigd (15 november 2026): VLC-playback, automatisch wekken
 en VLC openen, en video sluiten op de tv laat de Mac-stream gestopt. Het eenmalig
 herstarten na een profielkeuze moet nog op hardware worden bevestigd.
-Op 19 november verbrak VLC 3.0.24 na een kanaalwissel elke nieuwe stream na 0,3 s,
-tot VLC opnieuw werd geopend. De verbinding kwam sneller binnen dan de afspeelopdracht,
-dus waarschijnlijk haalde VLC de oude stream opnieuw op. De volgorde ‘eerst VLC loslaten, dan Streamlink herstarten’ moet
-nog op hardware worden bevestigd.
+Op 19 november bevestigd met een prototype van het doorgeefluik: wisselen binnen één
+stream (H.265 1440p ↔ H.264 1080p) speelt door op VLC 3.0.24. De versie in `app/relay.py`
+moet nog op hardware worden bevestigd.
 CI bewijst geen hardwarewerking.
 
 Bronnen: [Streamlink HTTP-uitvoer](https://streamlink.github.io/cli.html#player-options),

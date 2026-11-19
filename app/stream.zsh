@@ -34,17 +34,17 @@ if [[ "$hq" == 1 ]]; then
         -a twitch -s "$service" -w 2>/dev/null)
     if [[ ! "$token" =~ '^[a-z0-9]{20,40}$' ]]; then
         if (( config_login )); then
-            print -r -- "[sofastream][info] 2K met de Twitch-login uit je Streamlink-config."
+            print -r -- "[sofastream][info] 2K met de Twitch-login uit je Streamlink-config." >&2
         else
-            print -r -- "[sofastream][warning] 2K staat aan, maar er is geen Twitch-login (sleutelhanger, dienst '$service', of Streamlink-config); maximaal 1080p."
+            print -r -- "[sofastream][warning] 2K staat aan, maar er is geen Twitch-login (sleutelhanger, dienst '$service', of Streamlink-config); maximaal 1080p." >&2
         fi
     elif [[ "$(print -r -- "Authorization: OAuth $token" | "${TV_CURL_BIN:-/usr/bin/curl}" -s -o /dev/null \
             -w '%{http_code}' -m 4 -H @- "${TV_TWITCH_VALIDATE_URL:-https://id.twitch.tv/oauth2/validate}")" == 401 ]]; then
         # An expired login would make Streamlink fail; play without it instead.
         if (( config_login )); then
-            print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; 2K gebruikt nu de login uit je Streamlink-config."
+            print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; 2K gebruikt nu de login uit je Streamlink-config." >&2
         else
-            print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; opnieuw ophalen voor 2K. Nu maximaal 1080p."
+            print -r -- "[sofastream][warning] Twitch-login in de sleutelhanger is verlopen; opnieuw ophalen voor 2K. Nu maximaal 1080p." >&2
         fi
     else
         umask 077

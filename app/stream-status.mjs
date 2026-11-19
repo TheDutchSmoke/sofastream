@@ -18,18 +18,24 @@ export function parseStreamStatus(output) {
   return { state: 'unknown' };
 }
 
-// The quality Streamlink serves to the TV, e.g. '1440p60 · 2K'. The log belongs to the
-// current session (tv.zsh removes it on every start); null until VLC connects.
-export function parseStreamQuality(log) {
-  const name = [...String(log).matchAll(/^\[cli\]\[info\] Opening stream: (\S+) \(/gm)].at(-1)?.[1];
-  if (!name || !/^[\w.+-]{1,32}$/.test(name)) return null;
+// The relay logs "[relay][info] Bron: <channel> · <quality>" whenever a source starts
+// playing, so the last such line is what the TV gets now (the channel changes while the
+// relay runs). The log belongs to the current session: tv.zsh removes it on every start.
+export function parseRelaySource(log) {
+  const match = [...String(log).matchAll(/^\[relay\]\[info\] Bron: ([a-z0-9_]{1,25})(?: · ([\w.+-]{1,32}))?$/gm)].at(-1);
+  if (!match) return null;
+  return { channel: match[1], quality: describeQuality(match[2]) };
+}
+
+export function describeQuality(name) {
+  if (!name) return null;
   const height = Number(name.match(/^(\d+)p/)?.[1]);
   return height >= 2160 ? `${name} · 4K` : height >= 1440 ? `${name} · 2K` : name;
 }
 
-async function streamQuality() {
+async function relaySource() {
   const path = process.env.TV_STREAM_LOG || join(process.env.TV_CACHE_DIR || join(homedir(), '.cache/tv'), 'stream.log');
-  return parseStreamQuality(await readFile(path, 'utf8').catch(() => ''));
+  return parseRelaySource(await readFile(path, 'utf8').catch(() => ''));
 }
 
 export async function getStreamStatus() {
@@ -38,7 +44,10 @@ export async function getStreamStatus() {
       timeout: 1500, maxBuffer: 65536,
     });
     const stream = parseStreamStatus(stdout);
-    if (stream.state === 'running') stream.quality = await streamQuality();
+    if (stream.state === 'running') {
+      const source = await relaySource();
+      if (source) Object.assign(stream, source);
+    }
     return stream;
   } catch (error) {
     if (/Could not find service|service not found/i.test(error.stderr || '')) return { state: 'stopped' };
