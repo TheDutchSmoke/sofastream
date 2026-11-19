@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseStreamStatus, describeStreamStatus, parseStreamQuality } from './stream-status.mjs';
+import { parseStreamStatus, describeStreamStatus, parseRelaySource, describeQuality } from './stream-status.mjs';
 
 const run = promisify(execFile);
 const folder = await mkdtemp(join(tmpdir(), 'tv-playback-'));
@@ -20,9 +20,12 @@ let malformed = false;
 let ignoreStop = false;
 // Real VLC on tvOS never answers a WebSocket close frame.
 let ignoreClose = false;
-// How VLC treats the stream after openURL: 'keep' plays, 'drop' disconnects at
-// once, 'never' does not connect. Each session has its own Streamlink log.
+// How VLC treats the relay after openURL: 'keep' stays connected, 'drop' leaves after
+// its probe, 'never' does not connect. The relay fixture reports the viewer count.
 let viewer = 'keep';
+const relayState = { ok: true, channel: 'star', quality: '1080p60', pending: null, viewers: 0, connections: 0, path: '/sess1' };
+let relayUp = true;
+const relayURL = 'http://127.0.0.1:8765/sess1';
 const preparations = [];
 const requests = [];
 const server = createServer((req, res) => {
@@ -72,15 +75,18 @@ server.on('upgrade', (req, socket) => {
       if (command.type === 'ended' && !ignoreStop) current = null;
       if (command.type === 'openURL') {
         current = command.url;
-        writeFileSync(logPath, '[cli][info] Starting server\n'
-          + (viewer === 'never' ? '' : '[cli][info] Got HTTP request from VLC/3.0.24 LibVLC/3.0.24\n')
-          + (viewer === 'drop' ? '[cli][info] HTTP connection closed\n[cli][info] Stream ended\n' : ''));
+        relayState.viewers = viewer === 'never' ? 0 : 1;
+        if (viewer !== 'never') relayState.connections += 1;
+        if (viewer === 'drop') setTimeout(() => { relayState.viewers = 0; }, 50);
       }
     }
   });
   socket.on('error', () => {});
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const relaySocket = join(folder, 'relay.sock');
+const relay = net.createServer(socket => socket.once('data', () => socket.end(relayUp ? JSON.stringify(relayState) + '\n' : '')));
+await new Promise(resolve => relay.listen(relaySocket, resolve));
 const configPath = join(folder, 'apple-tv.json');
 const logPath = join(folder, 'stream.log');
 const testConfig = { host: '127.0.0.1', port: server.address().port, name: 'Test TV', streamPort: 8765 };
@@ -100,10 +106,11 @@ fetch('http://127.0.0.1:${server.address().port}/fixture-prepare?auto=' + (confi
   });
 `, { mode: 0o700 });
 await writeFile(configPath, JSON.stringify(testConfig));
-await writeFile(logPath, '[cli][info] Starting server\n');
+await writeFile(logPath, '[relay][info] Bron: star · 1080p60\n');
 const invoke = (command, extraEnv = {}) => run(process.execPath, [fileURLToPath(new URL('./playback.mjs', import.meta.url)), command, 'star'], {
   env: { ...process.env, TV_APPLE_TV_CONFIG: configPath, TV_ACTIVE_TV_CONFIG: '', TV_STREAM_LOG: logPath,
-    TV_REMOTE_PYTHON: helper, TV_STREAM_HOLD_MS: '200', TV_STREAM_CONNECT_MS: '600', ...extraEnv }, timeout: 10000,
+    TV_REMOTE_PYTHON: helper, TV_RELAY_SOCKET: relaySocket, TV_STREAM_HOLD_MS: '200', TV_STREAM_CONNECT_MS: '600',
+    TV_RELAY_READY_MS: '1500', TV_VLC_IDLE_MS: '1500', TV_VLC_SETTLE_MS: '0', ...extraEnv }, timeout: 10000,
 });
 try {
   const running = parseStreamStatus('state = running\npid = 123\nhttps://www.twitch.tv/star\nlast exit code = 1\n');
@@ -112,12 +119,13 @@ try {
   const exited = parseStreamStatus('state = waiting\nlast exit code = 1\n');
   assert.match(describeStreamStatus(exited), /niet actief · foutcode 1/);
   assert.match(describeStreamStatus(parseStreamStatus('')), /niet beschikbaar/);
-  // The served quality comes from Streamlink's log of the current session.
-  assert.equal(parseStreamQuality('[cli][info] Available streams: 1080p60, 1440p60 (best)\n[cli][info] Opening stream: 1440p60 (hls)\n'), '1440p60 · 2K');
-  assert.equal(parseStreamQuality('[cli][info] Opening stream: 1080p60 (hls)'), '1080p60');
-  assert.equal(parseStreamQuality('[cli][info] Opening stream: 2160p60 (hls)'), '2160p60 · 4K');
-  assert.equal(parseStreamQuality('[cli][info] Starting server, access with one of:'), null, 'No quality before VLC connects');
-  assert.equal(parseStreamQuality('[cli][info] Opening stream: \x1b[2Jx (hls)'), null, 'Log text never reaches the label unchecked');
+  // Channel and quality follow the relay's last "Bron:" line: the channel changes while it runs.
+  assert.deepEqual(parseRelaySource('[relay][info] Bron: ohnepixel · 1440p60\n[cli][info] Opening stream: 1080p60 (hls)\n[relay][info] Bron: kaicenat · 1080p60\n'),
+    { channel: 'kaicenat', quality: '1080p60' });
+  assert.deepEqual(parseRelaySource('[relay][info] Bron: ohnepixel · 1440p60'), { channel: 'ohnepixel', quality: '1440p60 · 2K' });
+  assert.equal(describeQuality('2160p60'), '2160p60 · 4K');
+  assert.equal(parseRelaySource('[relay][info] Wissel naar kaicenat\n[cli][info] Opening stream: 1080p60 (hls)'), null, 'No source before it plays');
+  assert.equal(parseRelaySource('[relay][info] Bron: \x1b[2J · x'), null, 'Log text never reaches the label unchecked');
   assert.match(describeStreamStatus({ ...running, quality: '1440p60 · 2K' }), /actief · star · 1440p60 · 2K · PID 123/);
   console.log('PASS: stream quality in the status');
   assert.equal((await invoke('check')).stdout, '');
@@ -142,95 +150,95 @@ try {
   assert.deepEqual(preparations, ['prepare'], 'One helper owns discovery, wake and readiness');
   assert.equal(commands.length, 0, 'Prepare must not replace or queue playback');
   await writeFile(configPath, JSON.stringify(testConfig));
+  const waitIdleSoon = (ms = 300) => setTimeout(() => { current = null; }, ms);
+
+  // Other media plays: stop it, then open the relay once.
   current = 'http://example.invalid/old';
   assert.match((await invoke('play')).stdout, /Afspelen gestart: star in VLC op Test TV/);
-  assert.equal(commands.length, 2);
-  assert.deepEqual(commands[0], { type: 'ended' });
-  assert.equal(commands[1].type, 'openURL');
-  assert.match(commands[1].url, /^http:\/\/127\.0\.0\.1:8765\/star-[0-9a-z]+$/);
+  assert.deepEqual(commands, [{ type: 'ended' }, { type: 'openURL', url: relayURL }]);
   const activeStatus = (await invoke('status')).stdout;
   assert.match(activeStatus, /^Streamlink:/);
   assert.match(activeStatus, /Apple TV: speelt .* in VLC/);
-  await invoke('stop');
-  assert.equal(current, null);
+  console.log('PASS: other media stopped, relay opened');
+
+  // VLC already shows this relay: nothing is sent.
+  commands.length = 0;
+  assert.match((await invoke('play')).stdout, /star speelt in VLC op Test TV/);
+  assert.equal(commands.length, 0, 'a watched relay needs no VLC command');
+  console.log('PASS: a watched relay gets no command');
+
+  // tv stop unloads the relay first; VLC then ends the item itself: no 'ended' (VLC 3.0.24 hangs on it).
+  waitIdleSoon();
+  assert.match((await invoke('stop')).stdout, /tv-stream gestopt/);
+  assert.equal(commands.length, 0, 'stop never sends ended to a SofaStream stream');
+  current = relayURL;
+  assert.match((await invoke('stop', { TV_VLC_IDLE_MS: '300' })).stdout, /laatste seconden buffer/);
+  current = 'http://example.invalid/unrelated';
+  assert.match((await invoke('stop')).stdout, /andere media blijven spelen/);
+  assert.equal(current, 'http://example.invalid/unrelated', 'Stop must leave unrelated media alone');
+  console.log('PASS: stop without ended');
+
+  // An ended earlier relay (own address, older path): wait until VLC finishes it, never 'ended'.
+  current = 'http://127.0.0.1:8765/older';
+  relayState.viewers = 0;
+  waitIdleSoon();
+  assert.match((await invoke('play')).stdout, /Afspelen gestart/);
+  assert.deepEqual(commands, [{ type: 'openURL', url: relayURL }]);
+  commands.length = 0;
+  current = 'http://127.0.0.1:8765/older';
+  relayState.viewers = 0;
+  await assert.rejects(invoke('play', { TV_VLC_IDLE_MS: '300' }), error => /speelt de vorige stream nog af/.test(error.stderr));
+  assert.equal(commands.length, 0);
+  console.log('PASS: an ended relay item is never stopped with ended');
+
   // Without a close reply the command must still return promptly (the TUI waits for it).
+  current = null;
+  relayState.viewers = 0;
   ignoreClose = true;
   let started = Date.now();
   assert.match((await invoke('play')).stdout, /Afspelen gestart/);
   assert.ok(Date.now() - started < 4000, `play hung ${Date.now() - started} ms after VLC ignored close`);
-  started = Date.now();
-  assert.match((await invoke('stop')).stdout, /tv-stream gestopt/);
-  assert.ok(Date.now() - started < 4000, `stop hung ${Date.now() - started} ms after VLC ignored close`);
   ignoreClose = false;
-  console.log('PASS: play/stop return although VLC ignores close');
-  assert.match((await invoke('status')).stdout, /geen actieve weergave/);
-  current = 'http://example.invalid/unrelated';
-  await invoke('stop');
-  assert.equal(current, 'http://example.invalid/unrelated', 'Stop must leave unrelated media alone');
+  console.log('PASS: play returns although VLC ignores close');
+
+  // VLC confirms the URL but drops (exit 3) or never opens the stream: report it.
+  for (const [mode, code, text] of [['drop', 3, /verbrak de stream direct/], ['never', 1, /haalt de stream niet op/]]) {
+    current = null;
+    relayState.viewers = 0;
+    viewer = mode;
+    await assert.rejects(invoke('play'), error => error.code === code && text.test(error.stderr));
+  }
+  viewer = 'keep';
+  console.log('PASS: a dropped or unopened stream is not reported as playing');
+
+  assert.match((await invoke('status')).stdout, /speelt|geen actieve/);
   malformed = true;
   assert.match((await invoke('status')).stdout, /afspelen onbekend/);
   malformed = false;
   ignoreStop = true;
+  current = 'http://example.invalid/unrelated';
   const previousOpens = commands.filter(command => command.type === 'openURL').length;
   await assert.rejects(invoke('play'), error => /stopt de vorige video niet/.test(error.stderr));
   assert.equal(commands.filter(command => command.type === 'openURL').length, previousOpens, 'Do not silently queue when stopping failed');
-  current = 'http://127.0.0.1:8765/';
-  await assert.rejects(invoke('stop'), error => /bevestigt het stoppen nog niet/.test(error.stderr));
   ignoreStop = false;
+  current = null;
 
-  // Before the port reopens, VLC must let go of our previous stream, and only that.
-  commands.length = 0;
-  current = 'http://127.0.0.1:8765/old-1';
-  assert.equal((await invoke('release')).stdout, '');
-  assert.deepEqual(commands, [{ type: 'ended' }]);
-  assert.equal(current, null);
-  current = 'http://example.invalid/unrelated';
-  await invoke('release');
-  assert.equal(current, 'http://example.invalid/unrelated', 'Release leaves unrelated media alone');
-  assert.equal(commands.length, 1);
-  current = 'http://127.0.0.1:8765/old-2';
-  ignoreStop = true;
-  await assert.rejects(invoke('release'), error => error.code === 1 && /stopt de vorige stream niet/.test(error.stderr));
-  ignoreStop = false;
-  available = false;
-  const asleep = await invoke('release');
-  assert.equal(asleep.stdout + asleep.stderr, '', 'A sleeping TV or closed VLC holds no stream');
-  available = true;
-  console.log('PASS: release stops only our previous stream');
-
-  // A fresh URL per session; with nothing playing, no stop command precedes it.
-  current = null;
-  commands.length = 0;
-  await invoke('play');
-  current = null;
-  await invoke('play');
-  assert.deepEqual(commands.map(command => command.type), ['openURL', 'openURL']);
-  assert.notEqual(commands[0].url, commands[1].url);
-  console.log('PASS: fresh URL per session, no stop when VLC is idle');
-
-  // VLC confirms the URL but drops (exit 3) or never opens the stream: report it.
-  current = null;
-  viewer = 'drop';
-  await assert.rejects(invoke('play'), error => error.code === 3 && /verbrak de stream direct/.test(error.stderr));
-  current = null;
-  viewer = 'never';
-  await assert.rejects(invoke('play'), error => error.code === 1 && /haalt de stream niet op/.test(error.stderr));
-  viewer = 'keep';
-  current = null;
-  assert.match((await invoke('play')).stdout, /Afspelen gestart/);
-  console.log('PASS: a dropped or unopened stream is not reported as playing');
-  // Real Streamlink 8.6.3 output: a plain 'error:' line, not a '[cli][error]' log line.
+  // The relay has no video yet: Streamlink's own error appears at once, not after the wait.
+  relayState.channel = null;
   await writeFile(logPath, '[cli][info] Found matching plugin twitch for URL https://www.twitch.tv/star\nerror: No playable streams found on this URL: https://www.twitch.tv/star\n');
   const beforeFailure = commands.length;
   await assert.rejects(invoke('play'), error => /^Streamlink: No playable streams/.test(error.stderr));
   assert.equal(commands.length, beforeFailure);
-  await writeFile(logPath, '[cli][info] Available streams: 720p60, 1080p60 (best)\nerror: Failed to create HTTP server: [Errno 48] Address already in use\n');
+  await writeFile(logPath, 'error: Failed to create HTTP server: [Errno 48] Address already in use\n');
   let failedAt = Date.now();
   await assert.rejects(invoke('play'), error => /Address already in use/.test(error.stderr) && /Poort 8765 is nog bezet/.test(error.stderr));
   assert.ok(Date.now() - failedAt < 2000, `a Streamlink error took ${Date.now() - failedAt} ms to surface`);
+  relayUp = false;
+  await writeFile(logPath, '[relay][info] Stream ended (star)\n');
+  await assert.rejects(invoke('play'), error => /stopte voordat er beeld was/.test(error.stderr));
+  relayUp = true;
+  relayState.channel = 'star';
   assert.equal(commands.length, beforeFailure);
-  await writeFile(logPath, '[cli][error] Try 1/1: Could not open stream\n');
-  await assert.rejects(invoke('play'), error => /^Streamlink: Try 1\/1/.test(error.stderr));
   console.log('PASS: Streamlink errors surface at once');
   available = false;
   await assert.rejects(invoke('check'), error => /Afspelen op afstand/.test(error.stderr));
@@ -240,6 +248,7 @@ try {
   assert.doesNotMatch(unavailableStatus, /geen actieve weergave/);
   console.log('PASS: automatic wake/ready flow, pairing errors, changed IP, opt-out, local stream status, VLC playback, scoped stop and Streamlink failure.');
 } finally {
+  relay.close();
   server.closeAllConnections();
   for (const socket of upgraded) socket.destroy();
   await new Promise(resolve => server.close(resolve));

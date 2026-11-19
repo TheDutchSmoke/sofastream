@@ -30,6 +30,17 @@ _tv_abort_start() {
     fi
 }
 
+# The relay's control socket lives in the profile's cache folder (stable and dev apart).
+_tv_relay_socket() {
+    print -r -- "${TV_CACHE_DIR:-$HOME/.cache/tv}/relay.sock"
+}
+
+_tv_relay() {
+    local command="$1"
+    shift
+    python3 "$TV_APP_DIR/relay.py" "$command" "$(_tv_relay_socket)" "$@"
+}
+
 _tv_profile_retry() {
     local channel="$1" session="$2" cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
     local marker="$cache/profile-retry" log="$cache/profile-retry.log"
@@ -63,12 +74,16 @@ _tv_start() {
     _tv_cancel_profile_retry
     local label="$TV_LAUNCH_LABEL"
     local domain="gui/$(id -u)"
-    local streamlink="$(command -v streamlink)"
+    local streamlink="$(command -v streamlink)" ffmpeg="$(command -v ffmpeg)" python="$(command -v python3)"
     local cache="${TV_CACHE_DIR:-$HOME/.cache/tv}"
     local superseded="Vervangen door een nieuwere kanaalkeuze of stop."
 
     [[ -z "$streamlink" ]] && {
         echo "❌ Streamlink niet gevonden."
+        return 1
+    }
+    [[ -z "$ffmpeg" ]] && {
+        echo "❌ ffmpeg niet gevonden. Installeer met: brew install ffmpeg"
         return 1
     }
 
@@ -90,10 +105,6 @@ _tv_start() {
     woke=$(node "$TV_APP_DIR/playback.mjs" prepare) || return 1
     # Checking and waking can take long; a newer choice or 'tv stop' wins meanwhile.
     _tv_owns_session "$session" || { echo "$superseded"; return 1; }
-    # Let VLC drop the previous SofaStream item before its port reopens; otherwise
-    # VLC reconnects to it and takes the new stream's only connection. Runs before
-    # the snapshot, so it addresses the Apple TV of the previous session.
-    node "$TV_APP_DIR/playback.mjs" release || return 1
     python3 "$TV_APP_DIR/settings.py" snapshot || return 1
     local hq address
     hq=$(python3 "$TV_APP_DIR/settings.py" hq-enabled) || return 1
@@ -105,51 +116,69 @@ _tv_start() {
     }
 
     _tv_owns_session "$session" || { echo "$superseded"; return 1; }
-    # From here on the job changes; an interrupted start must not leave a server
-    # listening without a viewer. Subshells such as $(node …) inherit the trap, so
-    # only this shell cleans up; 'return' would lose the status, hence 'exit'.
-    # _tv_start always runs in its own process (bin/tv, $(…) in the TUI, the retry).
-    local depth=$ZSH_SUBSHELL
-    trap '(( ZSH_SUBSHELL > depth )) || _tv_abort_start "$session" "$domain/$label"; exit 130' INT TERM HUP
-    launchctl bootout "$domain/$label" 2>/dev/null
-    rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
+    # A running relay switches inside its stream: VLC keeps its connection and gets no
+    # command at all. (VLC 3.0.24 on tvOS fails on a second item in one session.)
+    local relay_channel relay_pending relay_viewers
+    if read -r relay_channel relay_pending relay_viewers <<< "$(_tv_relay query)" && [[ -n "$relay_viewers" ]]; then
+        if [[ "$relay_channel" != "$channel" || "$relay_pending" != - ]]; then
+            _tv_relay send switch "$channel" "$hq" >/dev/null || { echo "❌ Wisselen mislukt."; return 1; }
+        fi
+        if (( relay_viewers > 0 )); then
+            local switched=0
+            _tv_relay wait "$channel" "${TV_SWITCH_WAIT:-25}" || switched=$?
+            case $switched in
+                0) echo "▶ Gewisseld naar $channel op de tv." ;;
+                2) echo "❌ $channel start niet; het vorige kanaal blijft spelen. Bekijk Beheer → Streamlog." ;;
+                *) echo "❌ Wisselen naar $channel niet bevestigd. Bekijk Beheer → Streamlog." ;;
+            esac
+            return $(( switched != 0 ))
+        fi
+        # The relay runs but nobody watches: VLC opens it below.
+    else
+        # From here on the job changes; an interrupted start must not leave a server
+        # listening without a viewer. Subshells such as $(node …) inherit the trap, so
+        # only this shell cleans up; 'return' would lose the status, hence 'exit'.
+        # _tv_start always runs in its own process (bin/tv, $(…) in the TUI, the retry).
+        local depth=$ZSH_SUBSHELL
+        trap '(( ZSH_SUBSHELL > depth )) || _tv_abort_start "$session" "$domain/$label"; exit 130' INT TERM HUP
+        launchctl bootout "$domain/$label" 2>/dev/null
+        rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
 
-    # A one-shot job: unlike 'launchctl submit' (KeepAlive), launchd must not
-    # restart Streamlink after VLC closes the stream or Streamlink fails.
-    local job="$cache/$label.plist"
-    python3 -c 'import plistlib, sys
+        # A one-shot job: launchd must not restart the relay after it ends (VLC closed
+        # the video, the stream went offline, or 'tv stop').
+        local job="$cache/$label.plist"
+        python3 -c 'import plistlib, sys
 job, label, out, err, *args = sys.argv[1:]
 with open(job, "wb") as handle:
     plistlib.dump({"Label": label, "ProgramArguments": args, "RunAtLoad": True,
                    "KeepAlive": False, "StandardOutPath": out, "StandardErrorPath": err}, handle)' \
-        "$job" "$label" "$TV_STREAM_LOG" "$TV_STREAM_ERR" \
-        /bin/zsh -f "$TV_APP_DIR/stream.zsh" "$streamlink" "$hq" "$TV_TWITCH_KEYCHAIN_SERVICE" \
-        --twitch-low-latency \
-        --player-external-http \
-        --player-external-http-continuous no \
-        --player-external-http-interface "$address" \
-        --player-external-http-port "$TV_STREAM_PORT" \
-        "https://www.twitch.tv/$channel" best || {
+            "$job" "$label" "$TV_STREAM_LOG" "$TV_STREAM_ERR" \
+            "$python" "$TV_APP_DIR/relay.py" serve \
+            --listen "$address" --port "$TV_STREAM_PORT" --path "/$session" \
+            --control "$(_tv_relay_socket)" \
+            --stream-script "$TV_APP_DIR/stream.zsh" --streamlink "$streamlink" --ffmpeg "$ffmpeg" \
+            --service "$TV_TWITCH_KEYCHAIN_SERVICE" --channel "$channel" --hq "$hq" || {
+                echo "❌ Starten mislukt."
+                return 1
+            }
+
+        # bootout finishes asynchronously; retry briefly while the old job unloads.
+        local attempt started=0
+        for attempt in {1..20}; do
+            launchctl bootstrap "$domain" "$job" 2>/dev/null && { started=1; break; }
+            sleep 0.1
+        done
+        if (( ! started )); then
             echo "❌ Starten mislukt."
             return 1
-        }
-
-    # bootout finishes asynchronously; retry briefly while the old job unloads.
-    local attempt started=0
-    for attempt in {1..20}; do
-        launchctl bootstrap "$domain" "$job" 2>/dev/null && { started=1; break; }
-        sleep 0.1
-    done
-    if (( ! started )); then
-        echo "❌ Starten mislukt."
-        return 1
-    fi
-    if ! _tv_owns_session "$session"; then
-        # 'tv stop' ran during the bootstrap and removed the session: this job is
-        # ours and nobody stops it otherwise. A newer start owns the label itself.
-        [[ -e "$(_tv_session_file)" ]] || launchctl bootout "$domain/$label" 2>/dev/null
-        echo "$superseded"
-        return 1
+        fi
+        if ! _tv_owns_session "$session"; then
+            # 'tv stop' ran during the bootstrap and removed the session: this job is
+            # ours and nobody stops it otherwise. A newer start owns the label itself.
+            [[ -e "$(_tv_session_file)" ]] || launchctl bootout "$domain/$label" 2>/dev/null
+            echo "$superseded"
+            return 1
+        fi
     fi
 
     local played=0 output
@@ -494,12 +523,13 @@ EOF
             # and a start that is still checking or waking must not go on afterwards.
             _tv_cancel_profile_retry
             _tv_end_session
-            tv_notice=$(node "$TV_APP_DIR/playback.mjs" stop 2>&1) || tv_notice='VLC: stoppen niet bevestigd; geen verbinding of reactie.'
+            # Stop the relay first; VLC then ends the item itself (no 'ended' command).
             if launchctl bootout "$domain/$label" 2>/dev/null; then
                 echo "Streamlink: gestopt."
             else
                 echo "Streamlink: niet actief."
             fi
+            tv_notice=$(node "$TV_APP_DIR/playback.mjs" stop 2>&1) || tv_notice='VLC: stoppen niet bevestigd; geen verbinding of reactie.'
             [[ -n "$tv_notice" ]] && print -r -- "$tv_notice"
             return 0
             ;;
