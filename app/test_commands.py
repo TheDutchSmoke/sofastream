@@ -148,7 +148,7 @@ tv "$@"
         # The restart drops again: it reports the error and does not loop.
         time.sleep(1)
         self.assertEqual(self.starts(), 2)
-        self.assertIn('verbrak de stream direct', (self.root/'cache'/'profile-retry.log').read_text())
+        self.assertIn('verbrak de stream direct', self.retry_log_with('verbrak de stream direct'))
 
     def test_cli_favorites_duplicate_remove_and_list(self):
         self.assertIn('opgeslagen', self.run_tv('fav','add','@Star').stdout)
@@ -176,6 +176,14 @@ tv "$@"
         with self.log.open('a') as handle:
             handle.write('[cli][info] HTTP connection closed\n')
 
+    def retry_log_with(self, text, timeout=3):
+        """The retry runs detached; its output lands after the bootstrap the tests wait for."""
+        log = self.root/'cache'/'profile-retry.log'
+        until = time.monotonic() + timeout
+        while time.monotonic() < until and text not in (log.read_text() if log.exists() else ''):
+            time.sleep(0.05)
+        return log.read_text() if log.exists() else ''
+
     def wait_for_starts(self, expected, timeout=3):
         until = time.monotonic() + timeout
         while time.monotonic() < until and self.starts() < expected:
@@ -191,7 +199,7 @@ tv "$@"
         self.assertEqual(self.starts(), 1)
         self.vlc_closes()
         self.assertEqual(self.wait_for_starts(2), 2)
-        retry_log = (self.root/'cache'/'profile-retry.log').read_text()
+        retry_log = self.retry_log_with('Speelt: star')
         self.assertIn('eenmalig opnieuw starten', retry_log)
         self.assertIn('Speelt: star', retry_log)
         # The retry itself never schedules another retry.
@@ -242,7 +250,7 @@ tv "$@"
         self.assertIn('Streamlink: gestopt.', self.run_tv('stop').stdout)
         time.sleep(3)
         self.assertEqual(self.starts(), 1, self.trace.read_text())
-        self.assertIn('Vervangen', (self.root/'cache'/'profile-retry.log').read_text())
+        self.assertIn('Vervangen', self.retry_log_with('Vervangen'))
 
     def test_new_channel_is_not_replaced_by_a_running_profile_retry(self):
         self.assertEqual(self.run_tv('star', woke=True, prepare_delay='2').returncode, 0)
