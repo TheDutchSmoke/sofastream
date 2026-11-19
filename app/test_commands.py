@@ -161,6 +161,10 @@ tv "$@"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('star start niet; het vorige kanaal blijft spelen', result.stdout)
 
+    def test_the_previous_session_log_is_kept(self):
+        self.run_tv('star')
+        self.assertEqual((self.root/'stream.log.1').read_text(), 'existing stream log')
+
     def test_stop_unloads_the_relay_before_it_asks_vlc(self):
         self.run_tv('stop')
         calls = self.calls.read_text().splitlines()

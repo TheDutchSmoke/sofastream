@@ -118,8 +118,10 @@ _tv_start() {
     _tv_owns_session "$session" || { echo "$superseded"; return 1; }
     # A running relay switches inside its stream: VLC keeps its connection and gets no
     # command at all. (VLC 3.0.24 on tvOS fails on a second item in one session.)
-    local relay_channel relay_pending relay_viewers
-    if read -r relay_channel relay_pending relay_viewers <<< "$(_tv_relay query)" && [[ -n "$relay_viewers" ]]; then
+    local relay_channel relay_pending relay_viewers relay_version version
+    [[ -r "$TV_APP_DIR/../VERSION" ]] && version=$(<"$TV_APP_DIR/../VERSION")
+    if read -r relay_channel relay_pending relay_viewers relay_version <<< "$(_tv_relay query)" && [[ -n "$relay_viewers" ]] \
+        && [[ -z "$version" || "$relay_version" == "$version" ]]; then
         if [[ "$relay_channel" != "$channel" || "$relay_pending" != - ]]; then
             _tv_relay send switch "$channel" "$hq" >/dev/null || { echo "❌ Wisselen mislukt."; return 1; }
         fi
@@ -135,6 +137,8 @@ _tv_start() {
         fi
         # The relay runs but nobody watches: VLC opens it below.
     else
+        # Not running, or still the version from before 'brew upgrade': that one's files
+        # (stream.zsh for the next source) are gone, so it is replaced below.
         # From here on the job changes; an interrupted start must not leave a server
         # listening without a viewer. Subshells such as $(node …) inherit the trap, so
         # only this shell cleans up; 'return' would lose the status, hence 'exit'.
@@ -142,7 +146,11 @@ _tv_start() {
         local depth=$ZSH_SUBSHELL
         trap '(( ZSH_SUBSHELL > depth )) || _tv_abort_start "$session" "$domain/$label"; exit 130' INT TERM HUP
         launchctl bootout "$domain/$label" 2>/dev/null
-        rm -f "$TV_STREAM_LOG" "$TV_STREAM_ERR"
+        # Keep the previous session's log (Beheer → Streamlog shows the current one).
+        local file
+        for file in "$TV_STREAM_LOG" "$TV_STREAM_ERR"; do
+            [[ -f "$file" ]] && mv -f "$file" "$file.1"
+        done
 
         # A one-shot job: launchd must not restart the relay after it ends (VLC closed
         # the video, the stream went offline, or 'tv stop').
@@ -157,7 +165,7 @@ with open(job, "wb") as handle:
             --listen "$address" --port "$TV_STREAM_PORT" --path "/$session" \
             --control "$(_tv_relay_socket)" \
             --stream-script "$TV_APP_DIR/stream.zsh" --streamlink "$streamlink" --ffmpeg "$ffmpeg" \
-            --service "$TV_TWITCH_KEYCHAIN_SERVICE" --channel "$channel" --hq "$hq" || {
+            --service "$TV_TWITCH_KEYCHAIN_SERVICE" --channel "$channel" --hq "$hq" --version "$version" || {
                 echo "❌ Starten mislukt."
                 return 1
             }
