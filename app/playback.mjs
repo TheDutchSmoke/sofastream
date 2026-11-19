@@ -153,7 +153,8 @@ class DroppedStream extends Error {
   exitCode = 3;
 }
 
-const streamLog = () => readFile(process.env.TV_STREAM_LOG || '/tmp/streamlink-tv.log', 'utf8').catch(() => '');
+const streamLogPath = process.env.TV_STREAM_LOG || join(process.env.TV_CACHE_DIR || join(homedir(), '.cache/tv'), 'stream.log');
+const streamLog = () => readFile(streamLogPath, 'utf8').catch(() => '');
 
 // VLC confirms a URL before it has read any video, so its status alone is not
 // proof of playback. Streamlink accepts one connection: if VLC drops it right

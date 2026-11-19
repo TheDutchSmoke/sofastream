@@ -77,6 +77,13 @@ Zonder (geldige) login speelt het kanaal gewoon af in maximaal 1080p; het
 Streamlink-log meldt dan waarom. Een andere dienstnaam kan met
 `TV_TWITCH_KEYCHAIN_SERVICE`.
 
+Streamlink leest ook je eigen Streamlink-config (`config` en `config.twitch`). Staat
+daar een login (`twitch-api-header`), dan gebruikt SofaStream die ook. Instellingen
+toont dat. Is die login verlopen, dan meldt een kanaalkeuze dat, in plaats van
+"offline". Met 2K uit speelt SofaStream altijd H.264, ook als je config H.265 of AV1
+aanzet. SofaStream logt altijd op niveau `info`, zodat de login niet in het
+Streamlink-log komt, ook niet bij `loglevel=debug` in je config.
+
 ## Bediening
 
 - Klik of Enter: kanaal of overzicht openen.
@@ -122,7 +129,8 @@ devinstellingen worden behouden; koppelgegevens worden niet gekopieerd.
 ## Gegevens en privacy
 
 Stabiel gebruikt `~/.config/tv` en `~/.cache/tv`. Dev gebruikt
-`~/.config/sofastream-dev` en `~/.cache/sofastream-dev`.
+`~/.config/sofastream-dev` en `~/.cache/sofastream-dev`. Het Streamlink-log staat in
+de cachemap (`stream.log`, `stream.err`), niet meer in `/tmp`.
 Instellingen, favorieten, pairings, tokens en gebruikerslogs horen niet in Git.
 De GUI-importer leest een tijdelijke kopie van Chromium LevelDB en haalt volgtabellen
 op via de Twitch API. [Werkwijze en grenzen](app/gui-importer/README.md).
