@@ -114,11 +114,11 @@ class Screen:
         return ["".join(row) for row in self.cells]
 
     def locate(self, text):
-        matches = [(row, line) for row, line in enumerate(self.lines())
-                   if line.lstrip().startswith("│") and text in line]
-        # A result message may repeat the channel/menu name. Click the list row.
-        for row, line in sorted(matches, key=lambda item: not ('▸' in item[1] or '▌' in item[1])):
-            return line.index(text) + 2, row + 1
+        # The page has no side border. Search from the bottom row up: the button row and
+        # the list come before a notice above them that may repeat a channel or menu name.
+        for row, line in reversed(list(enumerate(self.lines()))):
+            if text in line:
+                return line.index(text) + 2, row + 1
         raise AssertionError(f"Control not visible: {text}\n" + "\n".join(self.lines()))
 
 
@@ -154,7 +154,7 @@ tv.main()
         log = root / "stream.log"
         menu = menu.replace('/tmp/streamlink-tv.log', str(log))
         menu = menu.replace('/tmp/streamlink-tv.err', str(root / 'stream.err'))
-        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --label', 'printf "Test: lokale streamstatus"')
+        menu = menu.replace('node "$TV_APP_DIR/stream-status.mjs" --tui', 'printf "change-input-label(Test: lokale streamstatus)"')
         started = root / "started"
         script = root / "menu.zsh"
         profile = ""
@@ -180,7 +180,7 @@ _tv_menu
         master, slave = pty.openpty()
         columns = 80 if '--narrow' in sys.argv else 110
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, columns, 0, 0))
-        env = {**os.environ, "TERM": "xterm-256color", "TV_APP_DIR": str(actual.parent), "TV_CONFIG_DIR": str(root), "TV_STREAM_LOG": str(log), "TV_STREAM_ERR": str(root/"stream.err"), "FZF_DEFAULT_OPTS": "--expect=enter --print-query --bind=enter:abort", "FZF_DEFAULT_OPTS_FILE": ""}
+        env = {**os.environ, "TERM": "xterm-256color", "TV_APP_DIR": str(actual.parent), "TV_CONFIG_DIR": str(root), "TV_STREAM_LOG": str(log), "TV_STREAM_ERR": str(root/"stream.err"), "FZF_DEFAULT_OPTS": "--expect=enter --print-query --bind=enter:abort", "FZF_DEFAULT_OPTS_FILE": "", "TV_TUI_MOTION": "0"}
         process = subprocess.Popen(["/bin/zsh", "-f", str(script)], stdin=slave,
                                    stdout=slave, stderr=slave, env=env, start_new_session=True)
         os.close(slave)
@@ -236,6 +236,15 @@ _tv_menu
             visible("Geen resultaten")
             assert process.poll() is None
             os.write(master, b"\x1b")
+            visible("Minecraft")
+            # A typed page number opens that page without Enter; [Beheer] opens page 200.
+            os.write(master, b"102")
+            visible("Nu offline.")
+            os.write(master, b"\x1b")
+            visible("Minecraft")
+            click("[Beheer]")
+            visible("Andere streamer openen")
+            click("[Terug]")
             visible("Minecraft")
             os.write(master, b"Beheer\r")
             visible("Andere streamer openen")
