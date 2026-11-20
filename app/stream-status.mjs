@@ -65,15 +65,49 @@ export function describeStreamStatus(stream) {
   return 'Streamlink: status niet beschikbaar.';
 }
 
-// fzf owns this short-lived preview process; it never contacts the Apple TV.
+// The stream row of the menu (DESIGN.md, Stream row). 256-colour codes only.
+const paint = (text, code) => (process.env.NO_COLOR ? text : `\x1b[${code}m${text}\x1b[0m`);
+const ON_AIR = /NAAR TV\s+([a-z0-9_]{1,25})/;
+
+export function streamLabel(stream, columns = 80, tick = 0) {
+  const width = Math.max(20, columns - 2);
+  if (stream.state === 'running') {
+    const glyph = tick % 2 ? '▷' : '▶';
+    const channel = stream.channel || 'stream';
+    // Too wide: drop " · 2K"/" · 4K", then the quality. Never cut the channel name.
+    let quality = stream.quality || '';
+    const fits = () => `${glyph} NAAR TV  ${channel}${quality ? ` · ${quality}` : ''} `.length <= width;
+    if (!fits()) quality = quality.replace(/ · [24]K$/, '');
+    if (!fits()) quality = '';
+    return paint(`${glyph} NAAR TV  `, '38;5;46') + paint(channel, '1;38;5;231')
+      + (quality ? paint(` · ${quality}`, '38;5;51') : '') + ' ';
+  }
+  if (stream.state === 'stopped') return `${paint('■ GEEN STREAM', '38;5;30')} `;
+  return `${paint('? STREAMSTATUS ONBEKEND', '38;5;226')} `;
+}
+
+export function onAirChannel(label) {
+  return String(label || '').replace(/\x1b\[[0-9;]*m/g, '').match(ON_AIR)?.[1] || '';
+}
+
+// fzf action: new stream row, plus a cached reload of the list when the channel that
+// goes to the TV changed, so the ▶ in the list never disagrees with the stream row.
+// Channel and quality are limited to [a-z0-9_] and [\w.+-]: the label holds no ')'.
+export function tuiAction(stream, env = process.env, tick = 0) {
+  const label = streamLabel(stream, Number(env.FZF_COLUMNS) || 80, tick);
+  const changed = onAirChannel(label) !== onAirChannel(env.FZF_INPUT_LABEL);
+  return `change-input-label(${label})${changed && env.TV_TUI_RELOAD ? `+reload(${env.TV_TUI_RELOAD})` : ''}`;
+}
+
+// fzf owns this short-lived process; it never contacts the Apple TV.
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   process.stdout.on('error', () => process.exit(0));
   do {
     const stream = await getStreamStatus();
-    if (process.argv[2] === '--label') {
-      const label = stream.state === 'running' ? `ACTIEF · ${stream.channel || 'stream'}${stream.quality ? ` · ${stream.quality}` : ''}`
-        : stream.state === 'stopped' ? 'GESTOPT' : 'STATUS ONBEKEND';
-      process.stdout.write(` SOFASTREAM${process.env.TV_DEV_MODE ? ' @DEV' : ''} · ${label} \n`);
+    if (process.argv[2] === '--tui') {
+      // The glyph alternates every 2 s (0.25 Hz); TV_TUI_MOTION=0 keeps it still.
+      const tick = process.env.TV_TUI_MOTION === '0' ? 0 : Math.floor(Date.now() / 2000);
+      process.stdout.write(tuiAction(stream, process.env, tick));
     } else {
       process.stdout.write(`\x1b[2J${describeStreamStatus(stream)}\n`);
     }

@@ -87,21 +87,37 @@ Streamlink-log komt, ook niet bij `loglevel=debug` in je config.
 
 ## Bediening
 
-- Klik of Enter: kanaal of overzicht openen.
-- Ctrl-F of rechtsklik: ster wisselen. Dit wijzigt geen Twitch-follows.
-- Ctrl-R: Twitch-status verversen.
+Het menu is een teletekstpagina: zwart, met het paginanummer en een lopende klok
+bovenaan en gekleurde knoppen onderaan. Elke pagina heeft een nummer: 101 live,
+102 offline, 103 status onbekend, 200 beheer, 300 instellingen.
+
+- Klik of Enter: kanaal, overzicht of actie openen.
+- Ctrl-F, rechtsklik of **[Favoriet]**: ster wisselen. Dit wijzigt geen Twitch-follows.
+- Ctrl-R of **[Verversen]**: Twitch-status verversen. Rechts op de zoekregel staat hoe
+  oud de lijst is (`stand 21:04`).
+- Typen zoekt op kanaal en game. Typ je `101`, `102`, `103`, `200` of `300`, dan opent
+  die pagina meteen. Acties op de beheerpagina (204, 210, 211 …) vragen altijd Enter.
 - Esc: zoekopdracht wissen, teruggaan of sluiten.
-- Beheer: favorieten, GUI-import, status, stoppen, logs en koppelen.
-- De status in de bovenrand volgt de Mac-stream automatisch, zonder de tv te bedienen,
-  met de kwaliteit die de tv krijgt, bijvoorbeeld `ACTIEF · kanaal · 1440p60 · 2K`.
+- Beheer (200): andere streamer openen, favoriet toevoegen, kanaal verwijderen,
+  GUI-import, status, stoppen, streamlog en koppelen.
+- De tweede regel volgt de Mac-stream automatisch, zonder de tv te bedienen, met de
+  kwaliteit die de tv krijgt, bijvoorbeeld `▶ NAAR TV  kanaal · 1440p60 · 2K`. Het kanaal
+  dat naar de tv gaat, heeft ook in de lijst een `▶`. `■ GEEN STREAM` betekent dat de Mac
+  niets stuurt.
+- In een venster van 100 kolommen of breder komt de titel van de stream erbij, vanaf
+  120 kolommen ook hoe lang de stream al bezig is.
 - Het menu gebruikt het hele terminalvenster, zoals `less` of `top`; na het sluiten
   staat je terminal er weer bij zoals ervoor.
+- `NO_COLOR` wordt gerespecteerd; `TV_TUI_MOTION=0` zet de klok en andere beweging uit.
 - Video sluiten op de tv sluit de Mac-stream zodra VLC de HTTP-verbinding verbreekt.
-- De melding ‘Afspelen gestart’ is een bevestiging van die actie; ‘Status’ is een
-  gedateerde momentopname. De bovenrand geeft de actuele Mac-status.
+- Een melding (groen gelukt, rood fout) is de uitkomst van je laatste actie; ‘Status’ is een
+  gedateerde momentopname. De tweede regel geeft de actuele Mac-status.
 - Een ander kanaal wisselt binnen dezelfde stream: VLC krijgt geen opdracht, het oude
   kanaal speelt tot het nieuwe beeld heeft. (VLC 3.0.24 op tvOS faalt op een tweede
   item in één sessie en opent een stream met een korte proefverbinding.)
+
+Het ontwerp staat in [`DESIGN.md`](DESIGN.md); de drie richtingen waaruit gekozen is,
+in [`docs/design/`](docs/design/).
 
 `tv --help` toont de commando's. `tv stop` stopt alleen de eigen stream. Sluiten van
 de TUI laat de video doorspelen; stoppen doe je op de tv of met `tv stop`.

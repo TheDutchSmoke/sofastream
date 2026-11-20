@@ -22,6 +22,7 @@ class Commands(unittest.TestCase):
         self.log.write_text('existing stream log')
         actual = Path(__file__).with_name('tui.py')
         (self.root/'settings.py').write_text(Path(__file__).with_name('settings.py').read_text())
+        (self.root/'page.py').write_text(Path(__file__).with_name('page.py').read_text())
         wrapper = self.root/'tui.py'
         wrapper.write_text(f'''import importlib.util, sys
 sys.dont_write_bytecode = True

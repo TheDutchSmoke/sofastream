@@ -6,8 +6,12 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import shutil
 import tempfile
 import unicodedata
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from page import CYAN, GREEN, MAGENTA, TEAL, WHITE, band, column_head, display_width, notice_rows, paint  # noqa: E402
 
 ROOT = Path(os.environ.get("TV_CONFIG_DIR", Path.home() / ".config/tv"))
 CONFIG = Path(os.environ.get("TV_APPLE_TV_CONFIG", ROOT / "apple-tv.json"))
@@ -122,31 +126,50 @@ def select(key):
     print(f"Gekozen: {clean(chosen['name'])}. Geldt vanaf je volgende kanaalkeuze.")
 
 
-def menu():
+def menu(color=False, columns=None):
+    """Page 300 for fzf: band, notice, column head, then one row per setting."""
+    width = max(20, (columns or shutil.get_terminal_size().columns) - 2)
     current = load()
-    print(f"header\tAPPLE TV · {clean(current.get('name', 'nog niet gekozen'))}")
-    print("header\tSelectie geldt bij de volgende start · Esc terug")
+    name = clean(current.get("name", "nog niet gekozen"))
+    print("header\t" + band("INSTELLINGEN", [f"Apple TV: {name}", name], width, color, dev=DEV))
+    notice = os.environ.get("TV_TUI_NOTICE", "")
+    kind = os.environ.get("TV_TUI_NOTICE_KIND") or None
+    rows = os.environ.get("TV_TUI_NOTICE_ROWS", "")
+    for line in notice_rows(notice or "Een keuze geldt vanaf je volgende kanaalkeuze.",
+                            kind if kind in ("ok", "error", "info") else None, width, color,
+                            min(4, max(2, int(rows))) if rows.isdigit() else None, hint=not notice):
+        print("header\t" + line)
+    print("header\t" + column_head("     INSTELLING", color))
+
+    def row(key, glyph, glyph_fg, text):
+        print(f"{key}\t  " + paint(glyph, glyph_fg, color) + "  " + paint(text, WHITE, color))
+
+    def state(on):
+        return ("●", GREEN) if on else ("○", TEAL)
+
     selected = device_key(current) if current.get("host") else None
     for device in devices():
         key = device_key(device)
-        mark = "★" if key == selected else "○"
-        print(f"device:{key}\t{mark} {clean(device['name'])} · {clean(device['host'])}")
-    print("scan\t↻ Zoek Apple TVs op het netwerk")
-    paired = remote_identity(current) and (ROOT / "remote/pyatv.conf").is_file()
-    pairing = "koppeling opgeslagen · opnieuw koppelen" if paired else "eenmalig koppelen nodig"
-    print(f"pair\t⌘ Automatische start: {pairing} (pincode op tv)")
+        row(f"device:{key}", *(("◉", GREEN) if key == selected else ("○", TEAL)),
+            f"{clean(device['name'])} · {clean(device['host'])}")
+    row("scan", "↻", CYAN, "Zoek Apple TVs op het netwerk")
+    paired = bool(remote_identity(current) and (ROOT / "remote/pyatv.conf").is_file())
+    pairing = "Afstandsbediening: " + ("koppeling opgeslagen" if paired else "eenmalig koppelen nodig")
+    detail = " · opnieuw koppelen" if paired else " · pincode op tv"
+    row("pair", *state(paired), pairing + (detail if 5 + display_width(pairing + detail) <= width else ""))
     enabled = current.get("autoStart", True)
-    print(f"auto\tAutomatisch wakker maken en VLC openen: {'aan' if enabled else 'uit'}")
+    row("auto", *state(enabled), f"Automatisch wakker maken en VLC openen: {'aan' if enabled else 'uit'}")
     if twitch_login_present():
         login = "Twitch-login gevonden"
     elif streamlink_config_login():
         login = "login uit je Streamlink-config"
     else:
-        login = "geen Twitch-login, max 1080p"
-    print(f"hq\t2K (1440p, H.265; Apple TV 4K): {'aan' if current.get('twitch2k', False) else 'uit'} · {login}")
+        login = "geen Twitch-login" + (", max 1080p" if width >= 72 else "")
+    hq = current.get("twitch2k", False)
+    row("hq", *state(hq), f"2K (1440p, H.265; Apple TV 4K): {'aan' if hq else 'uit'} · {login}")
     if DEV:
-        print("dev-info\tDEV · Versie en gescheiden testomgeving bekijken")
-        print("dev-copy\tDEV · Ontbrekende voorkeuren uit stabiel overnemen")
+        row("dev-info", "◆", MAGENTA, "DEV · Versie en gescheiden testomgeving bekijken")
+        row("dev-copy", "◆", MAGENTA, "DEV · Ontbrekende voorkeuren uit stabiel overnemen")
 
 
 def twitch_login_present():
@@ -230,7 +253,9 @@ if __name__ == "__main__":
             configure(sys.argv[2] if len(sys.argv) > 2 else "", sys.argv[3] if len(sys.argv) > 3 else "")
         elif action == "select": select(sys.argv[2])
         elif action == "scan": scan()
-        elif action == "menu": menu()
+        elif action == "menu":
+            columns = next((int(a) for a in sys.argv[2:] if a.isdigit() and int(a) > 0), None)
+            menu("--color" in sys.argv[2:] and not os.environ.get("NO_COLOR"), columns)
         elif action == "dev-info": dev_info()
         elif action == "dev-copy": copy_stable()
         elif action == "snapshot": snapshot()

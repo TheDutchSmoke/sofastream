@@ -29,6 +29,7 @@ from settings import load as load_config, save as save_config, device_key, remot
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.environ.get("TV_CONFIG_DIR", Path.home() / ".config/tv"))
 PRIVATE = CONFIG_DIR / "remote"
+INDENT = "  " if os.environ.get("TV_FULLSCREEN") else ""
 PAIR_HINT = f"Automatische start nog niet gekoppeld. Voer eenmalig '{app_command()} pair' uit (pincode op tv)."
 
 
@@ -68,7 +69,7 @@ async def read_pin():
         if not future.done():
             future.set_result(line.strip())
 
-    print("Pincode op de Apple TV (leeg = annuleren): ", end="", flush=True)
+    print(f"{INDENT}Pincode op de Apple TV (leeg = annuleren): ", end="", flush=True)
     try:
         termios.tcsetattr(fd, termios.TCSANOW, hidden)
         loop.add_reader(fd, ready)
@@ -144,7 +145,11 @@ async def list_devices():
 async def pair(config, storage):
     if not sys.stdin.isatty():
         raise RemoteError(f"Start '{app_command()} pair' in je terminal om de pincode in te voeren.")
-    print("Apple TV koppelen: er verschijnt zo een pincode op de tv. Ctrl-C annuleert.", flush=True)
+    # In the menu this runs on page 220, below the band; there each line starts in column 3.
+    if INDENT:
+        print(f"{INDENT}Apple TV koppelen: er verschijnt zo een pincode op de tv.\n{INDENT}Ctrl-C annuleert.\n", flush=True)
+    else:
+        print("Apple TV koppelen: er verschijnt zo een pincode op de tv. Ctrl-C annuleert.", flush=True)
     device = await discover(config, storage)
     handler = await pyatv.pair(device, Protocol.Companion, asyncio.get_running_loop(),
                               storage=storage, name="tv op Mac")
@@ -162,7 +167,7 @@ async def pair(config, storage):
         await storage.save()
         config["autoStart"] = True
         remember_device(config, device)
-        print("Gekoppeld. Een kanaal kiezen wekt voortaan zo nodig de Apple TV en opent VLC.")
+        print(f"{INDENT}Gekoppeld. Een kanaal kiezen wekt voortaan zo nodig de Apple TV en opent VLC.")
     finally:
         await handler.close()
 
